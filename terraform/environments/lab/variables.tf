@@ -69,6 +69,11 @@ variable "k3s_version" {
   type        = string
 }
 
+variable "wazuh_version" {
+  description = "Pinned wazuh-docker tag."
+  type        = string
+}
+
 variable "admin_cidrs" {
   description = "CIDRs allowed to SSH to the app VM. Empty keeps port 22 shut; use SSM."
   type        = list(string)

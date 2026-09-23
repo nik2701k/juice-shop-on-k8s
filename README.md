@@ -120,6 +120,17 @@ the Resource Groups Tagging API confirms at 18 of 18.
 | kubeconfig published to SSM, **server URL rewritten** to the private address | The stock file points at `127.0.0.1`, which is useless anywhere but the node. Rewritten, it works directly over the VPN with nothing copied off the box by hand. |
 | CD applies manifests over **SSM Send-Command**, not a VPN tunnel in CI | The cluster needs no inbound access at all. CI authenticates with an OIDC role and AWS brokers the command, so no long-lived key to the private network ever sits in GitHub. The alternative — a WireGuard peer key in CI secrets — is a standing credential to the whole VPC. |
 
+### Wazuh
+
+| Decision | Why |
+|---|---|
+| Docker's `data-root` on the EBS volume | Images and named volumes then sit on the persistent disk, so indices survive an instance replacement rather than being rebuilt empty. |
+| Containers are **force-recreated** if `compose up` fails | Container metadata written by a host that no longer exists fails with `RWLayer of container ... is unexpectedly nil`. Containers are disposable, the volumes behind them are not, so the recovery is to recreate them. Found by rebuilding the instance and watching the stack refuse to start. |
+| `ExecStop` runs `compose down` | The graceful path: containers are removed on shutdown, so the stale-metadata case only arises on ungraceful termination. Two layers, and the fallback is the one that handles a terminated instance. |
+| Indexer, API and dashboard passwords **generated on the instance** | They are minted on first boot, stored in Parameter Store as `SecureString`, and restored on later boots. None of them is in Terraform state or the repo, and the shipped defaults are replaced — verified by confirming `admin/SecretPassword` returns 401. |
+| Wazuh's SSM policy is scoped to `/<project>/wazuh/*` | It has no business reading the app VM's WireGuard keys. |
+| `wazuh-docker` tag pinned | A rebuild reproduces the same stack rather than whatever is current. |
+
 ### Reliability decisions
 
 | Decision | Why |

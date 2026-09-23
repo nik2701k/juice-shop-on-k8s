@@ -43,4 +43,5 @@ module "compute" {
   wg_listen_port = var.wg_listen_port
   wg_peer_count  = var.wg_peer_count
   k3s_version    = var.k3s_version
+  wazuh_version  = var.wazuh_version
 }

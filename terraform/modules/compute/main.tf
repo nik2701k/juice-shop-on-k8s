@@ -93,6 +93,40 @@ resource "aws_iam_role_policy" "app_ssm" {
   policy = data.aws_iam_policy_document.app_ssm.json
 }
 
+# The Wazuh VM mints its own indexer, API and dashboard passwords and keeps
+# them in Parameter Store, so they are never in Terraform state, never in the
+# repo, and survive a rebuild of the instance. Scoped to its own subtree: it
+# has no business reading the app VM's WireGuard keys.
+data "aws_iam_policy_document" "wazuh_ssm" {
+  statement {
+    sid = "ManageOwnSecrets"
+    actions = [
+      "ssm:PutParameter",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+    ]
+    resources = ["arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.name}/wazuh/*"]
+  }
+
+  statement {
+    sid       = "UseDefaultSsmKey"
+    actions   = ["kms:Encrypt", "kms:Decrypt"]
+    resources = ["arn:aws:kms:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:key/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${data.aws_region.current.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "wazuh_ssm" {
+  name   = "${var.name}-wazuh-ssm"
+  role   = aws_iam_role.this["wazuh"].id
+  policy = data.aws_iam_policy_document.wazuh_ssm.json
+}
+
 resource "aws_iam_instance_profile" "this" {
   for_each = local.roles
 
@@ -195,6 +229,9 @@ resource "aws_instance" "wazuh" {
 
   user_data = templatefile("${path.module}/templates/wazuh-userdata.sh.tftpl", {
     data_volume_id = aws_ebs_volume.wazuh_data.id
+    wazuh_version  = var.wazuh_version
+    name           = var.name
+    region         = data.aws_region.current.region
   })
   user_data_replace_on_change = true
 
