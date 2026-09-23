@@ -103,6 +103,11 @@ variable "k3s_version" {
   type        = string
 }
 
+variable "wazuh_version" {
+  description = "Pinned wazuh-docker tag, so a rebuild reproduces the same stack."
+  type        = string
+}
+
 variable "ssh_public_key" {
   description = <<-EOT
     Optional OpenSSH public key. Leave null (the default) and no key pair is

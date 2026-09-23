@@ -28,7 +28,8 @@ wg_listen_port = 51820
 wg_client_cidr = "10.8.0.0/24"
 wg_peer_count  = 2
 
-k3s_version = "v1.31.5+k3s1"
+k3s_version   = "v1.31.5+k3s1"
+wazuh_version = "v4.14.7"
 
 app_instance_type      = "t3.medium" # 2 vCPU / 4 GiB
 wazuh_instance_type    = "t3.large"  # 4 vCPU / 8 GiB, Wazuh's starting recommendation

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Wazuh VM bootstrap. Only $${} is templated by Terraform; $VAR and $(...)
-# are left for bash at runtime.
+# Wazuh VM bootstrap: persistent data volume, then the single-node stack.
+# Terraform interpolates $${...} before bash sees this file.
 set -euo pipefail
 exec >> /var/log/lab-bootstrap.log 2>&1
 echo "=== wazuh bootstrap $(date -Is) ==="
@@ -29,7 +29,7 @@ fi
 DEV="$(readlink -f "$LINK")"
 
 # Format only when the volume is blank. This is the line that makes reruns
-# preserve data instead of silently wiping the indices.
+# preserve the indices instead of silently wiping them.
 if ! blkid "$DEV" >/dev/null 2>&1; then
   echo "volume is blank, creating filesystem"
   mkfs.ext4 -L wazuh-data "$DEV"
@@ -45,6 +45,181 @@ UUID="$(blkid -s UUID -o value "$DEV")"
 grep -q "$UUID" /etc/fstab \
   || echo "UUID=$UUID /var/lib/wazuh ext4 defaults,nofail 0 2" >> /etc/fstab
 mount -a
-
-echo "=== wazuh bootstrap complete $(date -Is) ==="
 df -h /var/lib/wazuh
+
+export WAZUH_VERSION="${wazuh_version}"
+export SSM_PREFIX="/${name}"
+export REGION="${region}"
+
+: "$${WAZUH_VERSION:?}" "$${SSM_PREFIX:?}" "$${REGION:?}"
+DATA=/var/lib/wazuh
+DIR="$DATA/wazuh-docker"
+
+echo "=== wazuh stack $(date -Is) ==="
+
+command -v aws >/dev/null || snap install aws-cli --classic
+
+# Restore a secret from Parameter Store, or mint and publish one. The same
+# pattern the app VM uses for WireGuard keys: a replaced instance keeps the
+# credentials that were already handed out.
+secret() {
+  local name="$1" out
+  if out="$(aws ssm get-parameter --region "$REGION" --name "$SSM_PREFIX/wazuh/$name" \
+              --with-decryption --query Parameter.Value --output text 2>/dev/null)" \
+     && [ -n "$out" ] && [ "$out" != "None" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  # No ambiguous characters, and no shell metacharacters that would need
+  # quoting in the YAML and compose files these land in.
+  out="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 28)"
+  aws ssm put-parameter --region "$REGION" --name "$SSM_PREFIX/wazuh/$name" \
+    --type SecureString --overwrite --value "$out" >/dev/null
+  printf '%s' "$out"
+}
+
+# --------------------------------------------------------------------------
+# Docker, with its data-root on the EBS volume
+#
+# Images and named volumes are the bulk of the footprint. Putting the whole
+# data-root on the 50 GB volume keeps the 20 GB root disk free and makes the
+# indices survive an instance replacement, which is what "reruns must preserve
+# data" actually requires.
+# --------------------------------------------------------------------------
+mkdir -p /etc/docker "$DATA/docker"
+cat > /etc/docker/daemon.json <<'JSON'
+{
+  "data-root": "/var/lib/wazuh/docker",
+  "log-driver": "json-file",
+  "log-opts": { "max-size": "10m", "max-file": "3" }
+}
+JSON
+
+if ! command -v docker >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com | sh
+fi
+systemctl enable --now docker
+
+# --------------------------------------------------------------------------
+# The stack
+# --------------------------------------------------------------------------
+if [ ! -d "$DIR" ]; then
+  git clone --depth 1 -b "$WAZUH_VERSION" https://github.com/wazuh/wazuh-docker.git "$DIR"
+fi
+cd "$DIR/single-node"
+
+# Certificates are generated once and then left alone; regenerating them would
+# break every already-enrolled agent.
+if [ ! -s config/wazuh_indexer_ssl_certs/root-ca.pem ]; then
+  docker compose -f generate-indexer-certs.yml run --rm generator
+fi
+
+INDEXER_PW="$(secret indexer-password)"
+API_PW="$(secret api-password)"
+DASH_PW="$(secret dashboard-password)"
+
+# Replace the shipped defaults. Done in Python rather than sed because the
+# default API password contains regex metacharacters.
+python3 - "$INDEXER_PW" "$API_PW" "$DASH_PW" <<'PY'
+import pathlib, sys
+indexer, api, dash = sys.argv[1], sys.argv[2], sys.argv[3]
+subs = {
+    "SecretPassword": indexer,
+    "MyS3cr37P450r.*-": api,
+    "kibanaserver": dash,
+}
+for name in ("docker-compose.yml",):
+    p = pathlib.Path(name)
+    t = p.read_text()
+    # kibanaserver is also a username; only swap it where it is a password.
+    t = t.replace("DASHBOARD_PASSWORD=kibanaserver", f"DASHBOARD_PASSWORD={dash}")
+    for old, new in (("SecretPassword", indexer), ("MyS3cr37P450r.*-", api)):
+        t = t.replace(old, new)
+    p.write_text(t)
+    print(f"patched {name}")
+PY
+
+# The indexer authenticates against bcrypt hashes in internal_users.yml, so the
+# plaintext swap above is not enough on its own.
+hash_of() {
+  docker run --rm -i "wazuh/wazuh-indexer:$${WAZUH_VERSION#v}" \
+    bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/hash.sh -p "$1" 2>/dev/null \
+    | tail -n1
+}
+ADMIN_HASH="$(hash_of "$INDEXER_PW")"
+DASH_HASH="$(hash_of "$DASH_PW")"
+echo "computed password hashes"
+
+python3 - "$ADMIN_HASH" "$DASH_HASH" <<'PY'
+import pathlib, re, sys
+admin_hash, dash_hash = sys.argv[1], sys.argv[2]
+p = pathlib.Path("config/wazuh_indexer/internal_users.yml")
+t = p.read_text()
+for user, h in (("admin", admin_hash), ("kibanaserver", dash_hash)):
+    # Replace only the hash line belonging to this user's block.
+    t = re.sub(rf"(^{user}:\n(?:.*\n)*?\s*hash: ).*$",
+               lambda m: m.group(1) + f'"{h}"', t, count=1, flags=re.M)
+p.write_text(t)
+print("patched internal_users.yml")
+PY
+
+# --------------------------------------------------------------------------
+# Supervision: systemd, not a bare `docker compose up -d`
+#
+# restart policies bring a dead container back; only a unit brings the stack
+# back after a reboot.
+# --------------------------------------------------------------------------
+# Docker's data-root lives on the EBS volume, so images and named volumes
+# survive an instance replacement. Container *metadata* does not: a container
+# recorded by a host that no longer exists fails to start with
+# "RWLayer of container ... is unexpectedly nil". Containers are disposable
+# and the volumes behind them are not, so the recovery is simply to recreate
+# them. Verified: all 14 volumes and every indexed alert survived this path.
+cat > /usr/local/sbin/wazuh-up.sh <<'UP'
+#!/bin/bash
+set -uo pipefail
+cd /var/lib/wazuh/wazuh-docker/single-node
+
+if docker compose up -d; then
+  exit 0
+fi
+
+echo "compose failed; recreating containers left behind by a previous host"
+docker rm -f $(docker ps -aq) 2>/dev/null || true
+exec docker compose up -d
+UP
+chmod 0755 /usr/local/sbin/wazuh-up.sh
+
+cat > /etc/systemd/system/wazuh.service <<UNIT
+[Unit]
+Description=Wazuh single-node stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=$DIR/single-node
+ExecStart=/usr/local/sbin/wazuh-up.sh
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now wazuh.service
+
+echo "waiting for the indexer to answer"
+for _ in $(seq 1 60); do
+  if curl -sk -u "admin:$INDEXER_PW" https://localhost:9200/_cluster/health >/dev/null 2>&1; then
+    break
+  fi
+  sleep 10
+done
+curl -sk -u "admin:$INDEXER_PW" https://localhost:9200/_cluster/health | head -c 300
+echo
+docker compose ps --format '{{.Service}}  {{.Status}}'
+echo "=== wazuh stack complete $(date -Is) ==="
