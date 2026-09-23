@@ -57,3 +57,13 @@ output "kubeconfig_parameter" {
   description = "SSM parameter holding the K3s kubeconfig, usable over the VPN."
   value       = module.compute.kubeconfig_parameter
 }
+
+output "deploy_role_arn" {
+  description = "Role ARN for the GitHub Actions deploy job."
+  value       = module.cicd.deploy_role_arn
+}
+
+output "manifest_bucket" {
+  description = "Bucket manifests are staged in for the node to pull."
+  value       = module.cicd.manifest_bucket
+}

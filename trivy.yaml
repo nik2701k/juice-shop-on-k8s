@@ -1,0 +1,9 @@
+# Juice Shop is intentionally vulnerable, but that is an application concern.
+# Nothing is relaxed for it here: this file only narrows the scan to the
+# directories we author, and excludes generated state.
+misconfiguration:
+  include-non-failures: false
+scan:
+  skip-dirs:
+    - ".terraform"
+    - "evidence"

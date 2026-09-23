@@ -1,0 +1,8 @@
+# Findings accepted with a reason. Each entry is a fingerprint, so it suppresses
+# exactly one occurrence and nothing else.
+
+# scripts/verify.sh asserts that Wazuh's published default indexer password has
+# been rotated, which requires naming it. The check exists precisely to prove
+# the credential is NOT in use: it passes only when the indexer answers 401.
+# Verified in the run captured in evidence/verifier-run.md.
+ec48c3a69aa2eb005f331fb9bea0c3a7ddfba58d:scripts/verify.sh:curl-auth-user:128

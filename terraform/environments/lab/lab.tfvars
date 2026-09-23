@@ -36,3 +36,5 @@ wazuh_instance_type    = "t3.large"  # 4 vCPU / 8 GiB, Wazuh's starting recommen
 app_root_volume_size   = 30
 wazuh_root_volume_size = 20
 wazuh_data_volume_size = 50
+
+github_repository = "nik2701k/juice-shop-on-k8s"

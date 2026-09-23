@@ -45,3 +45,11 @@ module "compute" {
   k3s_version    = var.k3s_version
   wazuh_version  = var.wazuh_version
 }
+
+module "cicd" {
+  source = "../../modules/cicd"
+
+  name              = var.project
+  github_repository = var.github_repository
+  app_role_name     = module.compute.app_role_name
+}
