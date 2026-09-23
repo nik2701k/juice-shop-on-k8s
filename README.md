@@ -76,7 +76,6 @@ it can override a baseline value if it ever needs to.
 | `ManagedBy` | provider baseline | Marks resources as Terraform-owned, so nobody edits them by hand |
 | `Owner` | `lab.tfvars` | Who to ask before deleting |
 | `CostCenter` | `lab.tfvars` | Cost allocation |
-| `Lifecycle` | `lab.tfvars` | `ephemeral` — these are meant to be destroyed after assessment |
 | `Repo` | `lab.tfvars` | Traces a resource back to the code that made it |
 
 Three of the 21 resources carry no tags: `aws_route` and the two
@@ -142,6 +141,84 @@ auto-loaded, so a home IP never reaches the repo or the redacted evidence.
 
 - Terraform ≥ 1.10 (native S3 state locking)
 - AWS CLI v2 with a configured profile
+
+## Deploy, verify, teardown
+
+### One-time: the state bucket
+
+A state backend cannot store the bucket it lives in, so this is the single
+step performed outside Terraform. Run it once per account.
+
+```bash
+B=juiceshop-lab-tfstate-<account-id>
+
+aws s3api create-bucket --bucket "$B" --region us-east-1
+
+# Versioning is the control that matters: it makes a truncated or corrupted
+# state file recoverable.
+aws s3api put-bucket-versioning --bucket "$B" \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-encryption --bucket "$B" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},"BucketKeyEnabled":true}]}'
+
+aws s3api put-public-access-block --bucket "$B" \
+  --public-access-block-configuration \
+  'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true'
+```
+
+Also attach a bucket policy denying `aws:SecureTransport = false`, so plaintext
+requests are rejected outright rather than merely encrypted at rest.
+
+Then write `terraform/environments/lab/backend.hcl`, which is gitignored
+because it names the account-scoped state bucket:
+
+```hcl
+bucket  = "juiceshop-lab-tfstate-<account-id>"
+key     = "lab/terraform.tfstate"
+region  = "us-east-1"
+profile = "<your-cli-profile>"
+```
+
+State locking is native to the S3 backend (`use_lockfile` in `versions.tf`),
+so there is no DynamoDB table to create.
+
+Optionally, to reach the lab without joining the VPN, copy
+`local.auto.tfvars.example` to `local.auto.tfvars` and set `evaluator_cidrs`
+to your address. That file is gitignored, so no operator IP reaches the repo.
+
+### Deploy
+
+```bash
+cd terraform/environments/lab
+
+terraform init -backend-config=backend.hcl
+terraform apply -var-file=lab.tfvars
+```
+
+`-var-file` is required: the infrastructure-shape variables have no defaults,
+so `lab.tfvars` is their only source and cannot silently disagree with one.
+
+### Verify
+
+```bash
+terraform fmt -recursive -check       # from the repo root, so modules/ is in scope
+terraform -chdir=terraform/environments/lab validate
+terraform -chdir=terraform/environments/lab plan -var-file=lab.tfvars
+```
+
+A clean deploy re-plans to zero changes.
+
+### Teardown
+
+```bash
+terraform destroy -var-file=lab.tfvars
+```
+
+Destroy leaves the state bucket in place; it is created out of band and
+holds the history of every apply. Delete it by hand if the account is being
+retired.
 
 ## Estimated cost
 

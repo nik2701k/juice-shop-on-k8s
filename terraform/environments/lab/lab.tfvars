@@ -6,12 +6,11 @@ region      = "us-east-1"
 aws_profile = "test1"
 
 # Merged into provider default_tags, so every taggable resource inherits them.
-# Owner/CostCenter make the lab findable in Cost Explorer; Lifecycle is the
-# reminder that these resources are meant to be destroyed after assessment.
+# Owner/CostCenter make the lab findable in Cost Explorer; Repo traces a
+# resource back to the code that created it.
 tags = {
   Owner      = "nik2701k"
   CostCenter = "security-lab"
-  Lifecycle  = "ephemeral"
   Repo       = "juice-shop-on-k8s"
 }
 
