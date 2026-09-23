@@ -1,39 +1,48 @@
 #!/bin/bash
-# App VM bootstrap. Terraform interpolates $${...} style references before
-# bash ever sees this file, so only $${} is templated; $VAR and $(...) survive
-# into the written scripts untouched.
+# App VM bootstrap: NAT hop for the private subnet, and WireGuard endpoint.
+# Terraform interpolates $${...} before bash sees this file, so $VAR and $(...)
+# survive into the written scripts untouched.
 set -euo pipefail
 exec >> /var/log/lab-bootstrap.log 2>&1
 echo "=== app bootstrap $(date -Is) ==="
 
-# Packet forwarding, persisted. Set only at runtime it works on first boot and
-# then silently reverts on reboot.
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y wireguard
+
+# --------------------------------------------------------------------------
+# Forwarding and NAT
+# --------------------------------------------------------------------------
+
+# Persisted. Set only at runtime it works on first boot and then silently
+# reverts on reboot.
 cat > /etc/sysctl.d/99-lab-nat.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
 SYSCTL
 sysctl --system
 
-# NAT rules are re-applied at every boot by systemd rather than written once by
-# cloud-init, so a reboot cannot quietly blackhole the private subnet. Each
-# rule is checked before being added, making the script safe to re-run.
+# Re-applied at every boot by systemd rather than written once by cloud-init,
+# so a reboot cannot quietly blackhole the private subnet. Every rule is
+# checked before being added, making the script safe to re-run.
 cat > /usr/local/sbin/lab-nat.sh <<'NAT'
 #!/bin/bash
 set -euo pipefail
-CIDR="${private_subnet_cidr}"
 IFACE="$(ip -o -4 route show to default | awk '{print $5}' | head -n1)"
 
-iptables -t nat -C POSTROUTING -s "$CIDR" -o "$IFACE" -j MASQUERADE 2>/dev/null \
-  || iptables -t nat -A POSTROUTING -s "$CIDR" -o "$IFACE" -j MASQUERADE
-iptables -C FORWARD -s "$CIDR" -j ACCEPT 2>/dev/null \
-  || iptables -I FORWARD 1 -s "$CIDR" -j ACCEPT
-iptables -C FORWARD -d "$CIDR" -j ACCEPT 2>/dev/null \
-  || iptables -I FORWARD 1 -d "$CIDR" -j ACCEPT
+for CIDR in ${nat_cidrs}; do
+  iptables -t nat -C POSTROUTING -s "$CIDR" -o "$IFACE" -j MASQUERADE 2>/dev/null \
+    || iptables -t nat -A POSTROUTING -s "$CIDR" -o "$IFACE" -j MASQUERADE
+  iptables -C FORWARD -s "$CIDR" -j ACCEPT 2>/dev/null \
+    || iptables -I FORWARD 1 -s "$CIDR" -j ACCEPT
+  iptables -C FORWARD -d "$CIDR" -j ACCEPT 2>/dev/null \
+    || iptables -I FORWARD 1 -d "$CIDR" -j ACCEPT
+done
 NAT
 chmod 0755 /usr/local/sbin/lab-nat.sh
 
 cat > /etc/systemd/system/lab-nat.service <<'UNIT'
 [Unit]
-Description=NAT for the lab private subnet
+Description=NAT for the lab private subnet and VPN pool
 After=network-online.target
 Wants=network-online.target
 
@@ -49,4 +58,81 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now lab-nat.service
 
+# --------------------------------------------------------------------------
+# WireGuard
+#
+# Keys are generated here, on the instance, and never handed to Terraform.
+# That keeps every private key out of Terraform state, which is the whole
+# reason this is not a tls_private_key resource.
+# --------------------------------------------------------------------------
+
+umask 077
+mkdir -p /etc/wireguard/keys
+cd /etc/wireguard
+
+# Only generate what is missing, so a re-run does not invalidate configs that
+# peers are already using.
+[ -s keys/server.key ] || wg genkey > keys/server.key
+wg pubkey < keys/server.key > keys/server.pub
+
+SERVER_PRIV="$(cat keys/server.key)"
+SERVER_PUB="$(cat keys/server.pub)"
+WG_NET="${wg_client_cidr}"
+WG_BASE="$(echo "$WG_NET" | cut -d/ -f1 | cut -d. -f1-3)"
+
+cat > /etc/wireguard/wg0.conf <<CONF
+# Managed by cloud-init. Edits are lost when the instance is replaced.
+[Interface]
+Address = $WG_BASE.1/24
+ListenPort = ${wg_listen_port}
+PrivateKey = $SERVER_PRIV
+CONF
+
+snap install aws-cli --classic >/dev/null 2>&1 || true
+
+for i in $(seq 1 ${wg_peer_count}); do
+  [ -s "keys/client$i.key" ] || wg genkey > "keys/client$i.key"
+  wg pubkey < "keys/client$i.key" > "keys/client$i.pub"
+
+  CLIENT_IP="$WG_BASE.$((i + 1))"
+
+  cat >> /etc/wireguard/wg0.conf <<PEER
+
+[Peer]
+PublicKey = $(cat "keys/client$i.pub")
+AllowedIPs = $CLIENT_IP/32
+PEER
+
+  # Split tunnel: only the VPC and the VPN pool are routed over the tunnel, so
+  # a peer's normal internet traffic is untouched.
+  CLIENT_CONF="$(cat <<CCONF
+[Interface]
+PrivateKey = $(cat "keys/client$i.key")
+Address = $CLIENT_IP/32
+
+[Peer]
+PublicKey = $SERVER_PUB
+Endpoint = ${wg_endpoint}:${wg_listen_port}
+AllowedIPs = ${vpc_cidr}, $WG_NET
+PersistentKeepalive = 25
+CCONF
+)"
+
+  # SecureString, so the config is KMS-encrypted at rest and never appears in
+  # Terraform state or in the repo.
+  aws ssm put-parameter \
+    --region ${region} \
+    --name "${ssm_prefix}/client-$i" \
+    --type SecureString \
+    --overwrite \
+    --value "$CLIENT_CONF" >/dev/null
+
+  echo "published ${ssm_prefix}/client-$i"
+done
+
+chmod 600 /etc/wireguard/wg0.conf
+systemctl enable --now "wg-quick@wg0"
+
+echo "server public key: $SERVER_PUB"
+wg show
 echo "=== app bootstrap complete $(date -Is) ==="

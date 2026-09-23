@@ -27,3 +27,12 @@ output "wazuh_data_volume_id" {
   description = "EBS volume holding the Wazuh indices."
   value       = aws_ebs_volume.wazuh_data.id
 }
+
+output "wireguard_client_config_parameters" {
+  description = <<-EOT
+    SSM parameter names holding the WireGuard client configs. Read one with:
+      aws ssm get-parameter --with-decryption --name <name> \
+        --query Parameter.Value --output text
+  EOT
+  value       = [for i in range(1, var.wg_peer_count + 1) : "/${var.name}/wireguard/client-${i}"]
+}
