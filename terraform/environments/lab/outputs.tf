@@ -33,6 +33,11 @@ output "app_instance_id" {
   value       = module.compute.app_instance_id
 }
 
+output "app_private_ip" {
+  description = "Private address of the app VM, reachable over the VPN."
+  value       = module.compute.app_private_ip
+}
+
 output "wazuh_private_ip" {
   description = "Private address of the Wazuh VM. It has no public address."
   value       = module.compute.wazuh_private_ip
