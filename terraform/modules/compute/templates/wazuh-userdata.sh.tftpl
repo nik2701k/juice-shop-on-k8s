@@ -128,8 +128,15 @@ subs = {
     "MyS3cr37P450r.*-": api,
     "kibanaserver": dash,
 }
-for name in ("docker-compose.yml",):
+# wazuh.yml matters as much as docker-compose.yml. The dashboard reads its API
+# credentials from that file, and patching only the compose file leaves the
+# dashboard presenting the shipped default while the manager expects the
+# rotated one - which fails as "Could not select any API entry", a message
+# that points at connectivity rather than at authentication.
+for name in ("docker-compose.yml", "config/wazuh_dashboard/wazuh.yml"):
     p = pathlib.Path(name)
+    if not p.exists():
+        continue
     t = p.read_text()
     # kibanaserver is also a username; only swap it where it is a password.
     t = t.replace("DASHBOARD_PASSWORD=kibanaserver", f"DASHBOARD_PASSWORD={dash}")
