@@ -52,3 +52,8 @@ output "wireguard_client_config_parameters" {
   description = "SSM parameters holding the WireGuard client configs."
   value       = module.compute.wireguard_client_config_parameters
 }
+
+output "kubeconfig_parameter" {
+  description = "SSM parameter holding the K3s kubeconfig, usable over the VPN."
+  value       = module.compute.kubeconfig_parameter
+}

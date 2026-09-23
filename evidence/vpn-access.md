@@ -20,11 +20,45 @@ Both the VPN pool and the whole VPC resolve to the WireGuard interface.
 
 ## 2. Handshake and liveness
 
+Client side:
+
 ```
 $ ping -c 3 10.8.0.1
 3 packets transmitted, 3 packets received, 0.0% packet loss
 round-trip min/avg/max/stddev = 234.392/234.585/234.913/0.233 ms
 ```
+
+### The server's own attestation
+
+Client-side output only shows what the operator's machine believes. This is the
+server reporting that an authenticated peer completed a handshake and moved
+real bytes, which cannot be produced without the peer's private key:
+
+```
+$ wg show                      # run on the app VM, via SSM
+interface: wg0
+  public key: F3eltsxx...nCE=
+  private key: (hidden)
+  listening port: 51820
+
+peer: Mtd0AyqJ...Ty4=                      # client-1, in use
+  endpoint: <OPERATOR_ISP_ADDRESS>:48404
+  allowed ips: 10.8.0.2/32
+  latest handshake: 28 seconds ago
+  transfer: 1.00 KiB received, 972 B sent
+
+peer: YhAYtEQi...5EA=                      # client-2, never connected
+  allowed ips: 10.8.0.3/32
+```
+
+The second peer is a built-in control. It is configured identically and has
+never been used, so it carries no handshake and no counters. The difference
+between the two entries is exactly the difference between a peer that
+authenticated and one that did not.
+
+The interface public key above is the same one that survived a deliberate
+instance replacement (section 6), so this handshake is running on a restored
+identity, not a freshly minted one.
 
 ## 3. The host on the far side is ours, not a coincidence
 
@@ -80,8 +114,16 @@ routes nor observes the operator's normal internet traffic.
 
 ## 6. Revoked keys stop working
 
-After the app VM was replaced, its keys regenerated. The still-running tunnel,
-holding the previous peer key, immediately went dark:
+Key material is mirrored to Parameter Store and restored on boot, so a replaced
+instance keeps its identity. Verified directly by forcing a replacement:
+
+```
+server public key before: F3eltsxx...nCE=
+server public key after:  F3eltsxx...nCE=
+```
+
+Before that mirroring existed, a replacement rotated the keys and any tunnel
+holding the previous peer key immediately went dark:
 
 ```
 $ ping -c 3 10.8.0.1

@@ -4,9 +4,10 @@ Terraform-driven security lab on AWS: OWASP Juice Shop on K3s behind a
 ModSecurity WAF, reachable only over WireGuard, with a private Wazuh stack
 collecting and indexing the ingress logs.
 
-**Status: network, compute, and VPN applied and verified.** Both VMs are up,
-the WireGuard endpoint is serving peers, and the private subnet reaches the
-internet through the app VM rather than a NAT Gateway.
+**Status: network, compute, VPN, and K3s applied and verified.** Both VMs are
+up, the WireGuard endpoint is serving peers, K3s is running on the app VM, and
+the private subnet reaches the internet through the app VM rather than a NAT
+Gateway.
 
 ---
 
@@ -101,12 +102,23 @@ the Resource Groups Tagging API confirms at 18 of 18.
 | **IMDSv2 required** (`http_tokens = "required"`) on both VMs | This lab deliberately runs a vulnerable application. Unauthenticated metadata access is exactly how a server-side request forgery in Juice Shop turns into stolen IAM role credentials. |
 | **One IAM role per VM**, not one shared role | They carry the same policy today, but the app VM will need to read Wazuh credentials from SSM Parameter Store and the Wazuh VM must never be able to. |
 | **WireGuard keys are generated on the instance**, never by Terraform | A `tls_private_key` resource would write the private key into Terraform state in plaintext. Generating on the box means state holds `PrivateKey = $SERVER_PRIV` — the shell variable, not a value. |
+| WireGuard keys are **mirrored to Parameter Store and restored on boot** | Without this, every edit to `user_data` replaces the instance, rotates the keys, and silently kills every peer config already handed out. Verified by forcing a replacement: the server public key was byte-identical afterwards. |
 | Client configs published to **SSM Parameter Store as `SecureString`** | KMS-encrypted at rest, fetched on demand, never written to the repo or to state. The app VM's IAM policy can write only `/<project>/wireguard/*`. |
 | VPC CIDR is `10.66.0.0/16`, not `10.0.0.0/16` | Found by testing, not by theory: a peer's existing corporate VPN already owned `10/16`, so `wg-quick` could not install the lab's route and probes silently went to the wrong network. `10.0.0.0/16` is among the most-claimed private ranges. |
 | VPN is a **split tunnel** (`AllowedIPs = VPC + pool`) | Only lab traffic crosses the tunnel. A peer's ordinary internet traffic is neither routed nor observable here. |
 | No key pair exists unless `ssh_public_key` is set | Default is SSM Session Manager only — no key material to distribute, lose, or commit. |
 | Root and data volumes **encrypted** | Cheap, and there is no reason not to. |
 | State bucket versioning enabled | This is the control that makes a truncated or corrupted state file recoverable. |
+
+### Kubernetes and delivery
+
+| Decision | Why |
+|---|---|
+| **K3s with Traefik disabled** | ingress-nginx is what carries ModSecurity. Leaving Traefik installed would mean a second ingress controller, and therefore a path around the WAF. |
+| K3s version **pinned** in `lab.tfvars` | A rebuild months from now yields the same cluster rather than whatever is current. |
+| Manifests live in `k8s/`, **not baked into `user_data`** | Cloud-init is part of the instance's replacement trigger. Manifests placed in K3s's auto-deploy directory that way would make editing a manifest replace the VM — the exact failure this repo already fixed for WireGuard keys. |
+| kubeconfig published to SSM, **server URL rewritten** to the private address | The stock file points at `127.0.0.1`, which is useless anywhere but the node. Rewritten, it works directly over the VPN with nothing copied off the box by hand. |
+| CD applies manifests over **SSM Send-Command**, not a VPN tunnel in CI | The cluster needs no inbound access at all. CI authenticates with an OIDC role and AWS brokers the command, so no long-lived key to the private network ever sits in GitHub. The alternative — a WireGuard peer key in CI secrets — is a standing credential to the whole VPC. |
 
 ### Reliability decisions
 

@@ -95,6 +95,14 @@ variable "wg_peer_count" {
   default     = 2
 }
 
+variable "k3s_version" {
+  description = <<-EOT
+    K3s release to install, pinned rather than tracking latest so a rebuild
+    months from now produces the same cluster.
+  EOT
+  type        = string
+}
+
 variable "ssh_public_key" {
   description = <<-EOT
     Optional OpenSSH public key. Leave null (the default) and no key pair is
