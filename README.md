@@ -4,9 +4,9 @@ Terraform-driven security lab on AWS: OWASP Juice Shop on K3s behind a
 ModSecurity WAF, reachable only over WireGuard, with a private Wazuh stack
 collecting and indexing the ingress logs.
 
-**Status: network and compute applied and verified.** Both VMs are up,
-reachable only through SSM, with the private subnet reaching the internet via
-the app VM rather than a NAT Gateway.
+**Status: network, compute, and VPN applied and verified.** Both VMs are up,
+the WireGuard endpoint is serving peers, and the private subnet reaches the
+internet through the app VM rather than a NAT Gateway.
 
 ---
 
@@ -100,6 +100,9 @@ the Resource Groups Tagging API confirms at 18 of 18.
 | State bucket denies `aws:SecureTransport=false` | Encryption at rest is not enough; plaintext requests are rejected outright. |
 | **IMDSv2 required** (`http_tokens = "required"`) on both VMs | This lab deliberately runs a vulnerable application. Unauthenticated metadata access is exactly how a server-side request forgery in Juice Shop turns into stolen IAM role credentials. |
 | **One IAM role per VM**, not one shared role | They carry the same policy today, but the app VM will need to read Wazuh credentials from SSM Parameter Store and the Wazuh VM must never be able to. |
+| **WireGuard keys are generated on the instance**, never by Terraform | A `tls_private_key` resource would write the private key into Terraform state in plaintext. Generating on the box means state holds `PrivateKey = $SERVER_PRIV` — the shell variable, not a value. |
+| Client configs published to **SSM Parameter Store as `SecureString`** | KMS-encrypted at rest, fetched on demand, never written to the repo or to state. The app VM's IAM policy can write only `/<project>/wireguard/*`. |
+| VPN is a **split tunnel** (`AllowedIPs = VPC + pool`) | Only lab traffic crosses the tunnel. A peer's ordinary internet traffic is neither routed nor observable here. |
 | No key pair exists unless `ssh_public_key` is set | Default is SSM Session Manager only — no key material to distribute, lose, or commit. |
 | Root and data volumes **encrypted** | Cheap, and there is no reason not to. |
 | State bucket versioning enabled | This is the control that makes a truncated or corrupted state file recoverable. |
@@ -199,6 +202,23 @@ so there is no DynamoDB table to create.
 Optionally, to reach the lab without joining the VPN, copy
 `local.auto.tfvars.example` to `local.auto.tfvars` and set `evaluator_cidrs`
 to your address. That file is gitignored, so no operator IP reaches the repo.
+
+### Joining the VPN
+
+The app VM generates every WireGuard key itself and publishes each peer config
+to Parameter Store, so no key material passes through Terraform or the repo.
+
+```bash
+aws ssm get-parameter --with-decryption \
+  --name /juiceshop-lab/wireguard/client-1 \
+  --query Parameter.Value --output text > wg-lab.conf
+
+sudo wg-quick up ./wg-lab.conf   # or import wg-lab.conf into the WireGuard app
+```
+
+`wg_peer_count` in `lab.tfvars` controls how many peers exist; the default of
+two covers one operator and one evaluator. Peer configs match `wg-*.conf`, which
+`.gitignore` already excludes.
 
 ### Deploy
 

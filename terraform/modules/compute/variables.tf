@@ -70,6 +70,31 @@ variable "wazuh_data_volume_size" {
   type        = number
 }
 
+variable "vpc_cidr" {
+  description = "VPC CIDR, routed to VPN peers so they can reach the private subnet."
+  type        = string
+}
+
+variable "wg_client_cidr" {
+  description = "Address pool handed out to WireGuard peers."
+  type        = string
+}
+
+variable "wg_listen_port" {
+  description = "WireGuard UDP listen port."
+  type        = number
+}
+
+variable "wg_peer_count" {
+  description = <<-EOT
+    How many peer keypairs to generate. Each one's client config is published
+    to SSM Parameter Store as a SecureString. Two by default: one operator,
+    one evaluator.
+  EOT
+  type        = number
+  default     = 2
+}
+
 variable "ssh_public_key" {
   description = <<-EOT
     Optional OpenSSH public key. Leave null (the default) and no key pair is

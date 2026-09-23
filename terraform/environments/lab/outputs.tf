@@ -42,3 +42,8 @@ output "wazuh_instance_id" {
   description = "Instance ID of the Wazuh VM, for SSM Session Manager."
   value       = module.compute.wazuh_instance_id
 }
+
+output "wireguard_client_config_parameters" {
+  description = "SSM parameters holding the WireGuard client configs."
+  value       = module.compute.wireguard_client_config_parameters
+}

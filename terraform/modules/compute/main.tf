@@ -27,6 +27,10 @@ locals {
 # Identities: SSM Session Manager access, no long-lived credentials anywhere
 # --------------------------------------------------------------------------
 
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
+
 data "aws_iam_policy_document" "ec2_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -53,6 +57,35 @@ resource "aws_iam_role_policy_attachment" "ssm" {
 
   role       = aws_iam_role.this[each.key].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# The app VM generates the WireGuard keys itself and publishes the client
+# configs to Parameter Store. Terraform never sees a private key, so none of
+# this key material ends up in state.
+data "aws_iam_policy_document" "app_wireguard_ssm" {
+  statement {
+    sid       = "PublishWireGuardClientConfigs"
+    actions   = ["ssm:PutParameter"]
+    resources = ["arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.name}/wireguard/*"]
+  }
+
+  statement {
+    sid       = "EncryptWithDefaultSsmKey"
+    actions   = ["kms:Encrypt"]
+    resources = ["arn:aws:kms:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:key/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${data.aws_region.current.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "app_wireguard_ssm" {
+  name   = "${var.name}-app-wireguard-ssm"
+  role   = aws_iam_role.this["app"].id
+  policy = data.aws_iam_policy_document.app_wireguard_ssm.json
 }
 
 resource "aws_iam_instance_profile" "this" {
@@ -88,7 +121,17 @@ resource "aws_instance" "app" {
   source_dest_check = false
 
   user_data = templatefile("${path.module}/templates/app-userdata.sh.tftpl", {
-    private_subnet_cidr = var.private_subnet_cidr
+    # Both the private subnet and the VPN pool are masqueraded: VPN peers reach
+    # the Wazuh VM as the app VM's private address, which is exactly what the
+    # Wazuh security group trusts.
+    nat_cidrs      = join(" ", [var.private_subnet_cidr, var.wg_client_cidr])
+    wg_client_cidr = var.wg_client_cidr
+    wg_listen_port = var.wg_listen_port
+    wg_peer_count  = var.wg_peer_count
+    wg_endpoint    = aws_eip.app.public_ip
+    vpc_cidr       = var.vpc_cidr
+    ssm_prefix     = "/${var.name}/wireguard"
+    region         = data.aws_region.current.region
   })
   user_data_replace_on_change = true
 
@@ -110,11 +153,18 @@ resource "aws_instance" "app" {
   tags = { Name = "${var.name}-app" }
 }
 
+# Allocated before the instance exists, because the WireGuard client configs
+# baked by user_data need the endpoint address. Associating it separately is
+# what keeps that from becoming a dependency cycle.
 resource "aws_eip" "app" {
-  instance = aws_instance.app.id
-  domain   = "vpc"
+  domain = "vpc"
 
   tags = { Name = "${var.name}-app" }
+}
+
+resource "aws_eip_association" "app" {
+  allocation_id = aws_eip.app.id
+  instance_id   = aws_instance.app.id
 }
 
 # The piece the network module deliberately left out: the private subnet's way

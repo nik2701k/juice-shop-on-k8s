@@ -37,4 +37,9 @@ module "compute" {
   wazuh_root_volume_size = var.wazuh_root_volume_size
   wazuh_data_volume_size = var.wazuh_data_volume_size
   ssh_public_key         = var.ssh_public_key
+
+  vpc_cidr       = var.vpc_cidr
+  wg_client_cidr = var.wg_client_cidr
+  wg_listen_port = var.wg_listen_port
+  wg_peer_count  = var.wg_peer_count
 }

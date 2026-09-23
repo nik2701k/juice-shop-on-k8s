@@ -59,6 +59,11 @@ variable "wg_client_cidr" {
 # Operator addresses are deliberately not in the committed tfvars. Put them in
 # local.auto.tfvars, which is gitignored, so no home IP reaches the repo.
 
+variable "wg_peer_count" {
+  description = "How many WireGuard peer configs to generate and publish to SSM."
+  type        = number
+}
+
 variable "admin_cidrs" {
   description = "CIDRs allowed to SSH to the app VM. Empty keeps port 22 shut; use SSM."
   type        = list(string)
