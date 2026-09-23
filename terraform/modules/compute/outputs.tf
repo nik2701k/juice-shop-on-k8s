@@ -19,8 +19,8 @@ output "wazuh_instance_id" {
 }
 
 output "wazuh_private_ip" {
-  description = "Private address of the Wazuh VM. It has no public address."
-  value       = aws_instance.wazuh.private_ip
+  description = "Private address of the Wazuh VM. Fixed, and it has no public address."
+  value       = local.wazuh_private_ip
 }
 
 output "wazuh_data_volume_id" {
