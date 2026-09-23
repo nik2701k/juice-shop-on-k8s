@@ -183,4 +183,86 @@ aws ssm put-parameter --region ${region} \
 rm -f /tmp/kubeconfig.pub
 echo "published ${ssm_prefix}/k3s/kubeconfig"
 
+# --------------------------------------------------------------------------
+# Wazuh agent
+#
+# Collects the WAF's logs so ModSecurity decisions and the verifier's marker
+# reach the indexer. The manager address is a constant, not looked up: the
+# Wazuh instance depends on the NAT route which depends on this instance, so
+# referencing it here would close a cycle in the Terraform graph.
+# --------------------------------------------------------------------------
+
+WAZUH_MANAGER_IP="${wazuh_manager}"
+
+if [ ! -x /var/ossec/bin/wazuh-control ]; then
+  curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH \
+    | gpg --no-default-keyring --keyring gnupg-ring:/usr/share/keyrings/wazuh.gpg --import
+  chmod 644 /usr/share/keyrings/wazuh.gpg
+  echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" \
+    > /etc/apt/sources.list.d/wazuh.list
+  apt-get update -y
+  # WAZUH_MANAGER is read by the package's postinst, which writes it into
+  # ossec.conf, so the agent knows where to enrol without a second edit.
+  WAZUH_MANAGER="$WAZUH_MANAGER_IP" apt-get install -y "wazuh-agent=${wazuh_agent_version}-1"
+  # The agent is deliberately excluded from unattended upgrades; a version
+  # bump mid-assessment would restart collection at an arbitrary moment.
+  apt-mark hold wazuh-agent
+fi
+
+# Enrolment is password-protected. The manager mints the password and both
+# sides read it from Parameter Store, so it is never written in this file.
+for _ in $(seq 1 60); do
+  if ENROLL_PW="$(aws ssm get-parameter --region ${region} \
+        --name "${ssm_prefix}/wazuh/enrollment-password" --with-decryption \
+        --query Parameter.Value --output text 2>/dev/null)" \
+     && [ -n "$ENROLL_PW" ] && [ "$ENROLL_PW" != "None" ]; then
+    break
+  fi
+  echo "waiting for the manager to publish the enrolment password"
+  sleep 10
+done
+
+if [ -n "$${ENROLL_PW:-}" ] && [ "$ENROLL_PW" != "None" ]; then
+  printf '%s' "$ENROLL_PW" > /var/ossec/etc/authd.pass
+  chmod 640 /var/ossec/etc/authd.pass
+  chown root:wazuh /var/ossec/etc/authd.pass
+fi
+
+# Collect the WAF container's stdout. K3s writes it under /var/log/containers
+# as CRI-format lines, so it is read as plain text and matched on content
+# rather than parsed as JSON. Both the nginx access log and the ModSecurity
+# JSON audit record arrive on this one stream.
+python3 - <<'OSSEC'
+import pathlib, re
+p = pathlib.Path("/var/ossec/etc/ossec.conf")
+t = p.read_text()
+block = """
+  <localfile>
+    <log_format>syslog</log_format>
+    <location>/var/log/containers/waf-*lab*.log</location>
+  </localfile>
+"""
+if "/var/log/containers/waf-" not in t:
+    # Append inside the final ossec_config element.
+    i = t.rfind("</ossec_config>")
+    t = t[:i] + block + t[i:]
+    p.write_text(t)
+    print("added WAF log collection to ossec.conf")
+else:
+    print("WAF log collection already configured")
+OSSEC
+
+# Do not start until the manager is actually listening, otherwise the first
+# enrolment attempt fails and the agent sits in a back-off.
+for _ in $(seq 1 60); do
+  (echo > /dev/tcp/$WAZUH_MANAGER_IP/1515) >/dev/null 2>&1 && break
+  sleep 10
+done
+
+systemctl daemon-reload
+systemctl enable wazuh-agent
+systemctl restart wazuh-agent
+sleep 5
+/var/ossec/bin/wazuh-control status | head -5
+
 echo "=== app bootstrap complete $(date -Is) ==="

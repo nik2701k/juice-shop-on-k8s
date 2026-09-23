@@ -14,6 +14,14 @@ data "aws_ami" "ubuntu" {
 }
 
 locals {
+  # A fixed address, not one AWS picks. The app VM's agent must know where the
+  # manager is, but the Wazuh instance already depends on the NAT route, which
+  # depends on the app instance - so referencing the Wazuh instance from the
+  # app's user_data would close a cycle in the graph. Pinning the address
+  # breaks that: it is a constant derived from the subnet, known before either
+  # instance exists.
+  wazuh_private_ip = cidrhost(var.private_subnet_cidr, 10)
+
   # One role per VM rather than one shared role. They carry the same policy
   # today, but the app VM will need to read the Wazuh credentials out of SSM
   # Parameter Store and the Wazuh VM must never be able to.
@@ -172,6 +180,9 @@ resource "aws_instance" "app" {
     ssm_prefix     = "/${var.name}"
     region         = data.aws_region.current.region
     k3s_version    = var.k3s_version
+    wazuh_manager  = local.wazuh_private_ip
+    # The apt package is versioned without the leading v that tags the repo.
+    wazuh_agent_version = trimprefix(var.wazuh_version, "v")
   })
   user_data_replace_on_change = true
 
@@ -226,6 +237,7 @@ resource "aws_instance" "wazuh" {
   vpc_security_group_ids = [var.wazuh_security_group_id]
   iam_instance_profile   = aws_iam_instance_profile.this["wazuh"].name
   key_name               = try(aws_key_pair.this[0].key_name, null)
+  private_ip             = local.wazuh_private_ip
 
   user_data = templatefile("${path.module}/templates/wazuh-userdata.sh.tftpl", {
     data_volume_id = aws_ebs_volume.wazuh_data.id

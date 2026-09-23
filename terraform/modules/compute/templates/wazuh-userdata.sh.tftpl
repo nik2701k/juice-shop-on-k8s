@@ -212,6 +212,62 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now wazuh.service
 
+
+# --------------------------------------------------------------------------
+# Agent enrolment and the lab's own detection rules
+# --------------------------------------------------------------------------
+
+ENROLL_PW="$(secret enrollment-password)"
+
+# authd rejects a password-bearing enrolment unless it is expecting one, with
+# the unhelpful "Invalid request for new agent". The setting must be changed in
+# the mounted host config, not inside the container: the entrypoint re-seeds
+# ossec.conf from this file on every recreate, silently reverting in-container
+# edits.
+sed -i "s|<use_password>no</use_password>|<use_password>yes</use_password>|" \
+  config/wazuh_cluster/wazuh_manager.conf
+
+# The WAF's log lines have no matching decoder for the marker, so this rule
+# matches on content. Without a rule that fires, the line is never promoted
+# into wazuh-alerts-*, which is the index the verifier queries.
+cat > /tmp/local_rules.xml <<'RULES'
+<!-- Managed by cloud-init. -->
+<group name="lab,">
+
+  <!-- if_sid matters. Wazuh emits one alert per event, choosing the single
+       best-matching rule, so a bare top-level <match> loses to the built-in
+       web access-log rule that has already matched. Declaring this a child of
+       31100 places it in that rule's subtree, where it wins. -->
+  <rule id="100100" level="5">
+    <if_sid>31100</if_sid>
+    <match>VERIFY-</match>
+    <description>Lab verifier marker observed in the WAF access log</description>
+  </rule>
+
+  <rule id="100110" level="7">
+    <match>ModSecurity: Access denied</match>
+    <description>WAF blocked a request (ModSecurity)</description>
+  </rule>
+
+</group>
+RULES
+
+# Recreate rather than restart. `docker compose restart` leaves this image's
+# supervised processes dead: the container reports Up while every wazuh-*
+# service inside it is stopped.
+docker compose up -d --force-recreate wazuh.manager
+sleep 45
+
+docker compose cp /tmp/local_rules.xml wazuh.manager:/var/ossec/etc/rules/local_rules.xml
+docker compose exec -T wazuh.manager chown wazuh:wazuh /var/ossec/etc/rules/local_rules.xml
+docker compose exec -T wazuh.manager bash -c \
+  "printf '%s' '$ENROLL_PW' > /var/ossec/etc/authd.pass && \
+   chmod 640 /var/ossec/etc/authd.pass && \
+   chown root:wazuh /var/ossec/etc/authd.pass"
+docker compose exec -T wazuh.manager /var/ossec/bin/wazuh-control restart >/dev/null 2>&1 || true
+sleep 30
+echo "manager configured: password enrolment, lab rules"
+
 echo "waiting for the indexer to answer"
 for _ in $(seq 1 60); do
   if curl -sk -u "admin:$INDEXER_PW" https://localhost:9200/_cluster/health >/dev/null 2>&1; then
