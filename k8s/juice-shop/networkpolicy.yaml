@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: juice-shop-from-waf-only
+  namespace: lab
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: juice-shop
+  policyTypes:
+    - Ingress
+  ingress:
+    # Defence in depth behind the ClusterIP decision: even a pod that already
+    # has a foothold in the cluster cannot reach Juice Shop except through the
+    # WAF.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: waf
+      ports:
+        - protocol: TCP
+          port: 3000

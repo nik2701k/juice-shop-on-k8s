@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: waf
+  namespace: lab
+spec:
+  # The lab's only published surface. K3s's built-in servicelb binds this to
+  # the node's port 80, which is reachable solely over the VPN or from an
+  # allowlisted evaluator address, because the security group opens nothing
+  # else to the internet.
+  type: LoadBalancer
+  # Without this, K3s's servicelb source-NATs every request and the WAF logs
+  # 10.42.0.1 - the CNI gateway - as the client for all traffic. Wazuh would
+  # then be unable to attribute any attack to a source address.
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: waf
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

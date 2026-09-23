@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waf
+  namespace: lab
+  labels:
+    app.kubernetes.io/name: waf
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: waf
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: waf
+    spec:
+      containers:
+        - name: modsecurity-crs
+          # The OWASP CRS nginx image, rather than ingress-nginx's ModSecurity
+          # integration, which upstream has deprecated. Pinned to an LTS tag so
+          # the rule set behind the captured evidence does not move.
+          image: owasp/modsecurity-crs:4.25.1-nginx-lts
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: BACKEND
+              value: http://juice-shop.lab.svc.cluster.local:3000
+            - name: PORT
+              value: "8080"
+            - name: SERVER_NAME
+              value: _
+
+            # On, not DetectionOnly. A WAF that logs but does not block cannot
+            # demonstrate a blocked request.
+            - name: MODSEC_RULE_ENGINE
+              value: "On"
+
+            # Paranoia 1 with the default inbound threshold of 5 means a single
+            # CRITICAL rule blocks on its own. That is what makes the blocked
+            # request deterministic rather than dependent on accumulated score.
+            - name: PARANOIA
+              value: "1"
+            - name: ANOMALY_INBOUND
+              value: "5"
+            - name: ANOMALY_OUTBOUND
+              value: "4"
+            - name: BLOCKING_PARANOIA
+              value: "1"
+
+            # JSON to stdout so the Wazuh agent can collect it from the
+            # container log without a sidecar or a shared volume.
+            - name: MODSEC_AUDIT_ENGINE
+              value: RelevantOnly
+            - name: MODSEC_AUDIT_LOG
+              value: /dev/stdout
+            - name: MODSEC_AUDIT_LOG_FORMAT
+              value: JSON
+            - name: MODSEC_AUDIT_LOG_TYPE
+              value: Serial
+            # Drops part E, the response body. With it included a single
+            # audit record is ~11 KB, nearly all of it a copy of the page
+            # that was served - which would flood the Wazuh indexer on a
+            # 50 GB volume for no investigative value.
+            - name: MODSEC_AUDIT_LOG_PARTS
+              value: ABIJDFHZ
+
+            - name: ACCESSLOG
+              value: /dev/stdout
+            - name: ERRORLOG
+              value: /dev/stderr
+            - name: LOGLEVEL
+              value: warn
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/modsecurity.d/owasp-crs/plugins/lab-after.conf
+              subPath: lab-after.conf
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+      volumes:
+        - name: rules
+          configMap:
+            name: waf-rules

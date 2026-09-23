@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: waf-rules
+  namespace: lab
+data:
+  # Mounted into owasp-crs/plugins/, which setup.conf includes *after* the
+  # rule files, so exclusions here apply to already-loaded rules.
+  lab-after.conf: |
+    # 920350 flags a numeric IP in the Host header. This lab is reached by
+    # address over the VPN and has no DNS name, so the rule fires on every
+    # single request and contributes 3 of the 5 points needed to block. That
+    # leaves only 2 points of headroom, which would make an ordinary request
+    # blockable on one extra WARNING and make the demonstrated block depend on
+    # accumulated noise rather than the attack itself.
+    SecRuleRemoveById 920350

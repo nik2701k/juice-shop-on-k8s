@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: juice-shop
+  namespace: lab
+spec:
+  # ClusterIP, deliberately. No NodePort and no LoadBalancer means there is no
+  # address that reaches Juice Shop without passing through the WAF. This is
+  # what prevents direct-origin bypass structurally rather than by firewall
+  # rule.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: juice-shop
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
