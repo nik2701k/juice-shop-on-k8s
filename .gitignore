@@ -1,0 +1,27 @@
+# Terraform state: never committed, lives encrypted+versioned in S3.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# Environment shape (lab.tfvars) is committed; operator addresses are not.
+*.auto.tfvars
+secrets*.tfvars
+!*.tfvars.example
+backend.hcl
+
+# Credentials and key material.
+*.pem
+*.key
+*.p12
+wg-*.conf
+.env
+.env.*
+
+# Generated evidence is redacted, but keep the raw working copies out.
+evidence/raw/
+
+# Assignment brief, kept locally as the requirements reference.
+task.txt
