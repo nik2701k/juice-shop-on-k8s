@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - juice-shop/deployment.yaml
+  - juice-shop/service.yaml
+  - juice-shop/networkpolicy.yaml
+  - waf/rules-configmap.yaml
+  - waf/deployment.yaml
+  - waf/service.yaml

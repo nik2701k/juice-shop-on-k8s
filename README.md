@@ -4,10 +4,10 @@ Terraform-driven security lab on AWS: OWASP Juice Shop on K3s behind a
 ModSecurity WAF, reachable only over WireGuard, with a private Wazuh stack
 collecting and indexing the ingress logs.
 
-**Status: network, compute, VPN, and K3s applied and verified.** Both VMs are
-up, the WireGuard endpoint is serving peers, K3s is running on the app VM, and
-the private subnet reaches the internet through the app VM rather than a NAT
-Gateway.
+**Status: network, compute, VPN, K3s, and the WAF applied and verified.**
+Juice Shop runs on K3s behind OWASP CRS on ModSecurity, reachable only over
+WireGuard, with the private subnet egressing through the app VM rather than a
+NAT Gateway.
 
 ---
 
@@ -114,6 +114,11 @@ the Resource Groups Tagging API confirms at 18 of 18.
 
 | Decision | Why |
 |---|---|
+| **OWASP CRS container**, not ingress-nginx's ModSecurity | Upstream ingress-nginx has deprecated its ModSecurity integration. The CRS nginx image is one of the options the brief names, is maintained for this purpose, and carries no deprecation risk. |
+| CRS rule **920350 excluded** | It flags a numeric IP in the Host header, which this lab always has. It fired on every request and consumed 3 of the 5 points needed to block, leaving an ordinary request two points from being blocked and making the demonstrated block partly dependent on noise. |
+| `externalTrafficPolicy: Local` on the WAF Service | K3s's servicelb source-NATs by default, so the WAF logged the CNI gateway as the client for every request. Wazuh would have had no source address to attribute anything to. |
+| Audit log part **E dropped** | Part E is the response body. Including it made each record 11 KB, almost entirely a copy of the page just served — 83% of the volume headed for a 50 GB indexer, with no investigative value. |
+| A **NetworkPolicy** admits only the WAF pod to Juice Shop | Defence in depth behind the ClusterIP decision: a pod that already has a foothold still cannot reach the application directly. |
 | **K3s with Traefik disabled** | ingress-nginx is what carries ModSecurity. Leaving Traefik installed would mean a second ingress controller, and therefore a path around the WAF. |
 | K3s version **pinned** in `lab.tfvars` | A rebuild months from now yields the same cluster rather than whatever is current. |
 | Manifests live in `k8s/`, **not baked into `user_data`** | Cloud-init is part of the instance's replacement trigger. Manifests placed in K3s's auto-deploy directory that way would make editing a manifest replace the VM — the exact failure this repo already fixed for WireGuard keys. |
@@ -148,6 +153,11 @@ the Resource Groups Tagging API confirms at 18 of 18.
 ## Repository layout
 
 ```
+k8s/                            # cluster manifests, applied separately from Terraform
+├── namespace.yaml
+├── juice-shop/                 # Deployment, ClusterIP Service, NetworkPolicy
+└── waf/                        # OWASP CRS + ModSecurity, LoadBalancer Service
+
 terraform/
 ├── environments/lab/           # root module: provider, backend, wiring, tfvars
 │   ├── lab.tfvars              # committed — the shape of the lab, not secrets
@@ -296,6 +306,9 @@ Tear down with `terraform destroy` after evidence is captured.
 
 ## Evidence
 
+- [`evidence/waf-blocking.md`](evidence/waf-blocking.md) — one allowed and one
+  deterministic blocked request with the CRS rule that caused it, plus three
+  independent proofs that direct-origin bypass is closed.
 - [`evidence/vpn-access.md`](evidence/vpn-access.md) — private access over
   WireGuard, including proof that the far-side host is the lab's own and that
   security groups are enforced across the tunnel.
