@@ -59,19 +59,24 @@ resource "aws_iam_role_policy_attachment" "ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-# The app VM generates the WireGuard keys itself and publishes the client
-# configs to Parameter Store. Terraform never sees a private key, so none of
-# this key material ends up in state.
-data "aws_iam_policy_document" "app_wireguard_ssm" {
+# The app VM generates its own key material and publishes it to Parameter
+# Store. Terraform never sees a private key, so none of it reaches state.
+# Read access matters as much as write: it lets a replaced instance restore the
+# identity it had before, instead of handing every peer a dead config.
+data "aws_iam_policy_document" "app_ssm" {
   statement {
-    sid       = "PublishWireGuardClientConfigs"
-    actions   = ["ssm:PutParameter"]
-    resources = ["arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.name}/wireguard/*"]
+    sid = "ManageOwnSecrets"
+    actions = [
+      "ssm:PutParameter",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+    ]
+    resources = ["arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.name}/*"]
   }
 
   statement {
-    sid       = "EncryptWithDefaultSsmKey"
-    actions   = ["kms:Encrypt"]
+    sid       = "UseDefaultSsmKey"
+    actions   = ["kms:Encrypt", "kms:Decrypt"]
     resources = ["arn:aws:kms:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:key/*"]
 
     condition {
@@ -82,10 +87,10 @@ data "aws_iam_policy_document" "app_wireguard_ssm" {
   }
 }
 
-resource "aws_iam_role_policy" "app_wireguard_ssm" {
-  name   = "${var.name}-app-wireguard-ssm"
+resource "aws_iam_role_policy" "app_ssm" {
+  name   = "${var.name}-app-ssm"
   role   = aws_iam_role.this["app"].id
-  policy = data.aws_iam_policy_document.app_wireguard_ssm.json
+  policy = data.aws_iam_policy_document.app_ssm.json
 }
 
 resource "aws_iam_instance_profile" "this" {
@@ -130,8 +135,9 @@ resource "aws_instance" "app" {
     wg_peer_count  = var.wg_peer_count
     wg_endpoint    = aws_eip.app.public_ip
     vpc_cidr       = var.vpc_cidr
-    ssm_prefix     = "/${var.name}/wireguard"
+    ssm_prefix     = "/${var.name}"
     region         = data.aws_region.current.region
+    k3s_version    = var.k3s_version
   })
   user_data_replace_on_change = true
 

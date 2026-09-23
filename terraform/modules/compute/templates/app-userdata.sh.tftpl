@@ -1,5 +1,5 @@
 #!/bin/bash
-# App VM bootstrap: NAT hop for the private subnet, and WireGuard endpoint.
+# App VM bootstrap: NAT hop, WireGuard endpoint, and K3s.
 # Terraform interpolates $${...} before bash sees this file, so $VAR and $(...)
 # survive into the written scripts untouched.
 set -euo pipefail
@@ -10,12 +10,18 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y wireguard
 
+snap install aws-cli --classic >/dev/null 2>&1 || true
+
+TOKEN="$(curl -sX PUT http://169.254.169.254/latest/api/token \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 300')"
+PRIV_IP="$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+  http://169.254.169.254/latest/meta-data/local-ipv4)"
+echo "private address: $PRIV_IP"
+
 # --------------------------------------------------------------------------
 # Forwarding and NAT
 # --------------------------------------------------------------------------
 
-# Persisted. Set only at runtime it works on first boot and then silently
-# reverts on reboot.
 cat > /etc/sysctl.d/99-lab-nat.conf <<'SYSCTL'
 net.ipv4.ip_forward = 1
 SYSCTL
@@ -61,18 +67,37 @@ systemctl enable --now lab-nat.service
 # --------------------------------------------------------------------------
 # WireGuard
 #
-# Keys are generated here, on the instance, and never handed to Terraform.
-# That keeps every private key out of Terraform state, which is the whole
-# reason this is not a tls_private_key resource.
+# Keys are generated here and never handed to Terraform, so no private key
+# reaches state. They are also mirrored to Parameter Store and restored on
+# boot: without that, every change to this script replaces the instance,
+# rotates the keys, and silently kills every peer config already handed out.
 # --------------------------------------------------------------------------
 
 umask 077
 mkdir -p /etc/wireguard/keys
 cd /etc/wireguard
 
-# Only generate what is missing, so a re-run does not invalidate configs that
-# peers are already using.
-[ -s keys/server.key ] || wg genkey > keys/server.key
+# Restore a key from Parameter Store, or mint and publish one. Idempotent.
+wg_key() {
+  local name="$1"
+  local file="keys/$name.key"
+  [ -s "$file" ] && return 0
+
+  if aws ssm get-parameter --region ${region} \
+       --name "${ssm_prefix}/wireguard/keys/$name" --with-decryption \
+       --query Parameter.Value --output text > "$file" 2>/dev/null && [ -s "$file" ]; then
+    echo "restored wireguard key: $name"
+  else
+    wg genkey > "$file"
+    aws ssm put-parameter --region ${region} \
+      --name "${ssm_prefix}/wireguard/keys/$name" --type SecureString \
+      --overwrite --value "$(cat "$file")" >/dev/null
+    echo "generated wireguard key: $name"
+  fi
+  chmod 600 "$file"
+}
+
+wg_key server
 wg pubkey < keys/server.key > keys/server.pub
 
 SERVER_PRIV="$(cat keys/server.key)"
@@ -88,12 +113,9 @@ ListenPort = ${wg_listen_port}
 PrivateKey = $SERVER_PRIV
 CONF
 
-snap install aws-cli --classic >/dev/null 2>&1 || true
-
 for i in $(seq 1 ${wg_peer_count}); do
-  [ -s "keys/client$i.key" ] || wg genkey > "keys/client$i.key"
+  wg_key "client$i"
   wg pubkey < "keys/client$i.key" > "keys/client$i.pub"
-
   CLIENT_IP="$WG_BASE.$((i + 1))"
 
   cat >> /etc/wireguard/wg0.conf <<PEER
@@ -103,8 +125,8 @@ PublicKey = $(cat "keys/client$i.pub")
 AllowedIPs = $CLIENT_IP/32
 PEER
 
-  # Split tunnel: only the VPC and the VPN pool are routed over the tunnel, so
-  # a peer's normal internet traffic is untouched.
+  # Split tunnel: only the VPC and the VPN pool cross the tunnel, so a peer's
+  # ordinary internet traffic is neither routed through nor visible here.
   CLIENT_CONF="$(cat <<CCONF
 [Interface]
 PrivateKey = $(cat "keys/client$i.key")
@@ -118,21 +140,47 @@ PersistentKeepalive = 25
 CCONF
 )"
 
-  # SecureString, so the config is KMS-encrypted at rest and never appears in
-  # Terraform state or in the repo.
-  aws ssm put-parameter \
-    --region ${region} \
-    --name "${ssm_prefix}/client-$i" \
-    --type SecureString \
-    --overwrite \
-    --value "$CLIENT_CONF" >/dev/null
-
-  echo "published ${ssm_prefix}/client-$i"
+  aws ssm put-parameter --region ${region} \
+    --name "${ssm_prefix}/wireguard/client-$i" --type SecureString \
+    --overwrite --value "$CLIENT_CONF" >/dev/null
+  echo "published ${ssm_prefix}/wireguard/client-$i"
 done
 
 chmod 600 /etc/wireguard/wg0.conf
 systemctl enable --now "wg-quick@wg0"
 
-echo "server public key: $SERVER_PUB"
-wg show
+# --------------------------------------------------------------------------
+# K3s
+#
+# Traefik is disabled because ingress-nginx is what carries ModSecurity, and
+# running two ingress controllers would leave a path around the WAF.
+# --------------------------------------------------------------------------
+
+if ! command -v k3s >/dev/null 2>&1; then
+  curl -sfL https://get.k3s.io \
+    | INSTALL_K3S_VERSION="${k3s_version}" \
+      INSTALL_K3S_EXEC="server --disable traefik --write-kubeconfig-mode 0600 --tls-san $PRIV_IP --tls-san $WG_BASE.1" \
+      sh -
+fi
+
+systemctl enable --now k3s
+
+# Readiness, not just "the service started".
+for _ in $(seq 1 60); do
+  k3s kubectl get node 2>/dev/null | grep -q ' Ready' && break
+  sleep 5
+done
+k3s kubectl get node
+
+# Published so an operator on the VPN can talk to the API without copying
+# files off the box by hand. The server URL is rewritten from 127.0.0.1,
+# which is useless anywhere but the node itself.
+sed "s#https://127.0.0.1:6443#https://$PRIV_IP:6443#" /etc/rancher/k3s/k3s.yaml \
+  > /tmp/kubeconfig.pub
+aws ssm put-parameter --region ${region} \
+  --name "${ssm_prefix}/k3s/kubeconfig" --type SecureString \
+  --tier Intelligent-Tiering --overwrite --value "file:///tmp/kubeconfig.pub" >/dev/null
+rm -f /tmp/kubeconfig.pub
+echo "published ${ssm_prefix}/k3s/kubeconfig"
+
 echo "=== app bootstrap complete $(date -Is) ==="

@@ -64,6 +64,11 @@ variable "wg_peer_count" {
   type        = number
 }
 
+variable "k3s_version" {
+  description = "Pinned K3s release, so a rebuild months from now yields the same cluster."
+  type        = string
+}
+
 variable "admin_cidrs" {
   description = "CIDRs allowed to SSH to the app VM. Empty keeps port 22 shut; use SSM."
   type        = list(string)
