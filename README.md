@@ -102,6 +102,7 @@ the Resource Groups Tagging API confirms at 18 of 18.
 | **One IAM role per VM**, not one shared role | They carry the same policy today, but the app VM will need to read Wazuh credentials from SSM Parameter Store and the Wazuh VM must never be able to. |
 | **WireGuard keys are generated on the instance**, never by Terraform | A `tls_private_key` resource would write the private key into Terraform state in plaintext. Generating on the box means state holds `PrivateKey = $SERVER_PRIV` — the shell variable, not a value. |
 | Client configs published to **SSM Parameter Store as `SecureString`** | KMS-encrypted at rest, fetched on demand, never written to the repo or to state. The app VM's IAM policy can write only `/<project>/wireguard/*`. |
+| VPC CIDR is `10.66.0.0/16`, not `10.0.0.0/16` | Found by testing, not by theory: a peer's existing corporate VPN already owned `10/16`, so `wg-quick` could not install the lab's route and probes silently went to the wrong network. `10.0.0.0/16` is among the most-claimed private ranges. |
 | VPN is a **split tunnel** (`AllowedIPs = VPC + pool`) | Only lab traffic crosses the tunnel. A peer's ordinary internet traffic is neither routed nor observable here. |
 | No key pair exists unless `ssh_public_key` is set | Default is SSM Session Manager only — no key material to distribute, lose, or commit. |
 | Root and data volumes **encrypted** | Cheap, and there is no reason not to. |
@@ -269,6 +270,12 @@ $2.80.** The network layer as applied today (VPC, subnets, IGW, route tables,
 security groups) costs **$0.00** — none of those resources are billable.
 
 Tear down with `terraform destroy` after evidence is captured.
+
+## Evidence
+
+- [`evidence/vpn-access.md`](evidence/vpn-access.md) — private access over
+  WireGuard, including proof that the far-side host is the lab's own and that
+  security groups are enforced across the tunnel.
 
 ## Notes
 
