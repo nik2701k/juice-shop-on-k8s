@@ -276,6 +276,21 @@ terraform -chdir=terraform/environments/lab plan -var-file=lab.tfvars
 
 A clean deploy re-plans to zero changes.
 
+### Verify
+
+```bash
+./scripts/verify.sh              # exit 0 only if every check passes
+./scripts/verify.sh --evidence   # also writes a redacted transcript
+```
+
+Eleven checks: readiness, one allowed and one blocked request, that Juice Shop
+is *not* reachable except through the WAF, that the indexer's shipped default
+password is rejected, and that a marker unique to this run is retrievable from
+the Indexer API. Exit 2 means the check could not run; exit 1 means it ran and
+something failed.
+
+Requires the VPN, since nothing in the lab is reachable from the internet.
+
 ### Teardown
 
 ```bash
@@ -304,8 +319,38 @@ security groups) costs **$0.00** — none of those resources are billable.
 
 Tear down with `terraform destroy` after evidence is captured.
 
+## CI/CD
+
+```
+push / pull request   ->  checks                       (always)
+workflow_dispatch     ->  checks -> terraform -> deploy -> verify
+```
+
+Checks are `terraform fmt` and `validate`, `shellcheck`, `kubeconform`, Trivy
+for IaC misconfiguration, and Gitleaks over full history. Deployment never
+happens automatically: it needs a human dispatch, and both shipping jobs are
+pinned to a protected `lab` environment.
+
+| Decision | Why |
+|---|---|
+| **OIDC**, not an access key | CI exchanges a short-lived GitHub token for short-lived AWS credentials. The trust policy accepts exactly one subject, `repo:<owner>/<repo>:environment:lab`, so a fork or another branch cannot assume the role. |
+| Manifests applied **by the node over SSM**, not by CI | The cluster needs no inbound path at all. The alternative — a WireGuard peer key in CI secrets — would be a standing credential to the whole VPC. |
+| `terraform` runs **before** `deploy` | An apply can replace the app VM, which rebuilds the cluster empty. Manifests shipped first are silently wiped; this happened twice during development. |
+| The deploy job ends by running the **verifier** | A release is green only once a request carrying a marker unique to that run has been found again through the Indexer API. |
+| `wait-ssm.sh` polls the invocation | `send-command` returns immediately. Without waiting and checking status, the job goes green regardless of what happened on the instance. |
+| `terraform fmt` runs from the **repo root** | Run from `environments/lab` it covers 5 of 13 `.tf` files, skips `modules/` entirely, and still exits 0. |
+
+Findings are accepted in `.trivyignore` and `.gitleaksignore` with reasons,
+per finding rather than per rule. Anything not listed still fails the build.
+Juice Shop's own vulnerabilities are an application concern and no check was
+relaxed on their account.
+
 ## Evidence
 
+- [`evidence/verifier-run.md`](evidence/verifier-run.md) — a passing run, and
+  both failure paths exercised on purpose.
+- [`evidence/wazuh-event.md`](evidence/wazuh-event.md) — automated agent
+  enrolment and a fresh marker retrieved through the Indexer API.
 - [`evidence/waf-blocking.md`](evidence/waf-blocking.md) — one allowed and one
   deterministic blocked request with the CRS rule that caused it, plus three
   independent proofs that direct-origin bypass is closed.
@@ -313,9 +358,85 @@ Tear down with `terraform destroy` after evidence is captured.
   WireGuard, including proof that the far-side host is the lab's own and that
   security groups are enforced across the tunnel.
 
-## Notes
+## TLS handling
 
-- **Actual effort / AI use / incomplete items:** to be completed at submission.
-- **TLS handling:** documented in the security decisions table; self-signed
-  certificates on both the WAF ingress and the Wazuh dashboard, since the lab
-  is private and has no public domain.
+The lab has no public domain, so there is no publicly trusted certificate to
+obtain. Three things carry TLS today:
+
+- **The Wazuh stack** generates its own internal CA at first boot and uses it
+  for manager/indexer/dashboard traffic. The dashboard therefore presents a
+  self-signed certificate, and the verifier reaches the Indexer API over HTTPS
+  with verification disabled — appropriate for a private CA whose root is not
+  distributed, and stated here rather than hidden.
+- **The transport to the lab** is encrypted by WireGuard regardless. Every
+  administrative path — the Kubernetes API, the Indexer API, the dashboard —
+  is reachable only inside that tunnel, so traffic is already protected by
+  ChaCha20-Poly1305 before any application-layer TLS is considered.
+- **The WAF listens on HTTP** inside the tunnel. Adding a self-signed
+  certificate there would encrypt an already-encrypted path and give an
+  evaluator a browser warning to click through, so it was left off
+  deliberately rather than by omission.
+
+For a public deployment the change is small and localised: terminate TLS at
+the WAF with a certificate from ACM or Let's Encrypt, and publish the WAF
+through a load balancer instead of the node port.
+
+## Effort
+
+Roughly six hours end to end, in one sitting, including the time spent on the
+failures below. The Terraform itself was a small part; most of the time went
+into proving each layer actually worked and fixing what that proved was
+broken.
+
+## AI use
+
+Built with Claude (Anthropic) in an agentic terminal session. The AI wrote the
+Terraform, manifests, bootstrap scripts, verifier, and CI workflow, ran every
+`apply`, executed the verification commands against live infrastructure, and
+authored the commit messages, pull requests, and this README. Direction,
+review, and all merges were human.
+
+The working method mattered more than the authorship: every layer was applied
+to real infrastructure and then probed, rather than being assumed correct
+because it planned cleanly. Most of the defects listed below were invisible to
+`terraform plan` and surfaced only when something was rebuilt, rebooted, or
+queried from the far side.
+
+## What testing caught
+
+Recorded because each of these would have shipped silently:
+
+| Found by | Defect |
+|---|---|
+| Connecting a real VPN client | The VPC used `10.0.0.0/16`, which the client's corporate VPN already routed. `wg-quick` could not install the lab's route, and two checks passed against the **wrong machine**. |
+| Replacing the app VM | Every `user_data` edit rotated the WireGuard keys, silently killing peer configs already handed out. |
+| Replacing the Wazuh VM | The stack would not restart: container metadata from a host that no longer existed. Volumes and data were intact; only the containers were stale. |
+| Reading the WAF's logs | Every request was attributed to the CNI gateway, so Wazuh would have had **no source address for any attack**. |
+| Reading the WAF's logs | Each audit record was 11 KB, mostly a copy of the page just served — 83% waste aimed at a 50 GB indexer. |
+| Enrolling the agent | `authd` rejects a password unless configured to expect one, and the fix had to go in the mounted host config because the entrypoint re-seeds `ossec.conf` on every recreate. |
+| Watching the marker not arrive | Wazuh emits one alert per event and picks the single best rule, so a bare `<match>` lost to the built-in web rule. Fixed with `if_sid`. |
+| Running the verifier | `timeout(1)` is absent on macOS, so the readiness check failed as "command not found" and looked exactly like a VPN outage. |
+| Running CI | The Trivy action reference did not resolve, so the job failed **before scanning anything** — a scan step that scans nothing. |
+
+## Incomplete
+
+Stated plainly rather than buried:
+
+- **Container security contexts are not hardened.** Trivy's KSV-0014 and
+  KSV-0118 are genuine gaps, not false positives: both containers run with a
+  writable root filesystem and without `runAsNonRoot`. Fixing this means
+  mapping each writable path to an `emptyDir` and confirming the UID each
+  upstream image actually runs as; guessing produces a pod that will not
+  start. It was not attempted late in the build rather than risk an unverified
+  change to a working, evidenced stack.
+- **The full automated path has not been re-run from an empty account.** Each
+  layer was rebuilt and verified as it was built, and the Wazuh agent fixes are
+  baked into `user_data`, but those particular fixes were applied to a running
+  system before being baked. A single `apply` from nothing is the one test not
+  performed — and on this project's record, that is exactly the test that finds
+  things.
+- **No HA and no backups.** Both explicitly optional here. The Wazuh data
+  volume carries `prevent_destroy` and survives instance replacement, which was
+  verified twice, but nothing is snapshotted off the volume.
+- **Screenshots of the Wazuh dashboard** are not included; the evidence is
+  transcript-based.
