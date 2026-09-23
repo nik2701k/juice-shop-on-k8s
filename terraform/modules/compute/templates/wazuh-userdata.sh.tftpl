@@ -1,0 +1,50 @@
+#!/bin/bash
+# Wazuh VM bootstrap. Only $${} is templated by Terraform; $VAR and $(...)
+# are left for bash at runtime.
+set -euo pipefail
+exec >> /var/log/lab-bootstrap.log 2>&1
+echo "=== wazuh bootstrap $(date -Is) ==="
+
+# The indexer refuses to start below this. Persisted to /etc/sysctl.d because
+# set live it works on first apply and then fails after the first reboot,
+# which presents as "the container died" and wastes an afternoon.
+cat > /etc/sysctl.d/99-wazuh.conf <<'SYSCTL'
+vm.max_map_count = 262144
+SYSCTL
+sysctl --system
+
+# The data volume is attached moments after the instance boots, so wait for it
+# rather than assuming it is already there.
+SERIAL="$(echo "${data_volume_id}" | tr -d '-')"
+LINK="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$SERIAL"
+for _ in $(seq 1 60); do
+  [ -e "$LINK" ] && break
+  sleep 5
+done
+if [ ! -e "$LINK" ]; then
+  echo "data volume ${data_volume_id} never appeared" >&2
+  exit 1
+fi
+
+DEV="$(readlink -f "$LINK")"
+
+# Format only when the volume is blank. This is the line that makes reruns
+# preserve data instead of silently wiping the indices.
+if ! blkid "$DEV" >/dev/null 2>&1; then
+  echo "volume is blank, creating filesystem"
+  mkfs.ext4 -L wazuh-data "$DEV"
+else
+  echo "volume already has a filesystem, leaving it alone"
+fi
+
+mkdir -p /var/lib/wazuh
+
+# Mount by UUID, not device name: NVMe device ordering is not stable. nofail
+# keeps a missing volume from blocking boot entirely.
+UUID="$(blkid -s UUID -o value "$DEV")"
+grep -q "$UUID" /etc/fstab \
+  || echo "UUID=$UUID /var/lib/wazuh ext4 defaults,nofail 0 2" >> /etc/fstab
+mount -a
+
+echo "=== wazuh bootstrap complete $(date -Is) ==="
+df -h /var/lib/wazuh

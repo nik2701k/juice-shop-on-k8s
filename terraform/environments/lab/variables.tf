@@ -70,3 +70,37 @@ variable "evaluator_cidrs" {
   type        = list(string)
   default     = []
 }
+
+variable "app_instance_type" {
+  description = "Instance type for the app VM."
+  type        = string
+}
+
+variable "wazuh_instance_type" {
+  description = "Instance type for the Wazuh VM."
+  type        = string
+}
+
+variable "app_root_volume_size" {
+  description = "Root volume size in GB for the app VM."
+  type        = number
+}
+
+variable "wazuh_root_volume_size" {
+  description = "Root volume size in GB for the Wazuh VM."
+  type        = number
+}
+
+variable "wazuh_data_volume_size" {
+  description = "Size in GB of the persistent EBS volume holding Wazuh indices."
+  type        = number
+}
+
+variable "ssh_public_key" {
+  description = <<-EOT
+    Optional OpenSSH public key. Left null, no key pair exists at all and SSM
+    Session Manager is the only way in. Belongs in local.auto.tfvars.
+  EOT
+  type        = string
+  default     = null
+}

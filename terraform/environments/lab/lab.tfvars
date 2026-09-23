@@ -20,3 +20,9 @@ private_subnet_cidr = "10.0.11.0/24"
 
 wg_listen_port = 51820
 wg_client_cidr = "10.8.0.0/24"
+
+app_instance_type      = "t3.medium" # 2 vCPU / 4 GiB
+wazuh_instance_type    = "t3.large"  # 4 vCPU / 8 GiB, Wazuh's starting recommendation
+app_root_volume_size   = 30
+wazuh_root_volume_size = 20
+wazuh_data_volume_size = 50
