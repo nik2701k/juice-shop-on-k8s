@@ -21,6 +21,16 @@ variable "aws_profile" {
   default     = null
 }
 
+variable "tags" {
+  description = <<-EOT
+    Extra tags merged into provider default_tags and applied to every taggable
+    resource. Ownership and cost-allocation tags belong here, not scattered
+    across individual resources.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "vpc_cidr" {
   description = "CIDR for the lab VPC."
   type        = string

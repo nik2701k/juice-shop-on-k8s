@@ -4,8 +4,7 @@ Terraform-driven security lab on AWS: OWASP Juice Shop on K3s behind a
 ModSecurity WAF, reachable only over WireGuard, with a private Wazuh stack
 collecting and indexing the ingress logs.
 
-**Status: phase 1 of 5 — network layer applied and verified.** See
-[Roadmap](#roadmap) for what is built and what is not.
+**Status: network layer applied and verified.**
 
 ---
 
@@ -62,6 +61,27 @@ listed with what it would have cost in `us-east-1`.
 
 **Roughly $149/month of managed-service spend avoided** versus the same
 architecture built the conventional enterprise way.
+
+### Tagging
+
+Tags are applied through the provider's `default_tags` rather than per
+resource, so no resource can be forgotten and no module has to know the
+tagging scheme. `lab.tfvars` supplies the ownership/cost half, merged last so
+it can override a baseline value if it ever needs to.
+
+| Tag | Source | Purpose |
+|---|---|---|
+| `Project` | provider baseline | Groups the lab in Cost Explorer |
+| `Env` | provider baseline | Separates this from any future environment |
+| `ManagedBy` | provider baseline | Marks resources as Terraform-owned, so nobody edits them by hand |
+| `Owner` | `lab.tfvars` | Who to ask before deleting |
+| `CostCenter` | `lab.tfvars` | Cost allocation |
+| `Repo` | `lab.tfvars` | Traces a resource back to the code that made it |
+
+Three of the 21 resources carry no tags: `aws_route` and the two
+`aws_route_table_association`s. **AWS does not support tags on those resource
+types at all** — it is not an omission. Everything taggable is tagged, which
+the Resource Groups Tagging API confirms at 18 of 18.
 
 ### Security decisions
 
@@ -122,6 +142,8 @@ auto-loaded, so a home IP never reaches the repo or the redacted evidence.
 - Terraform ≥ 1.10 (native S3 state locking)
 - AWS CLI v2 with a configured profile
 
+## Deploy, verify, teardown
+
 ### One-time: the state bucket
 
 A state backend cannot store the bucket it lives in, so this is the single
@@ -149,8 +171,8 @@ aws s3api put-public-access-block --bucket "$B" \
 Also attach a bucket policy denying `aws:SecureTransport = false`, so plaintext
 requests are rejected outright rather than merely encrypted at rest.
 
-Then write `terraform/environments/lab/backend.hcl` — gitignored, because it
-names the account-scoped state bucket:
+Then write `terraform/environments/lab/backend.hcl`, which is gitignored
+because it names the account-scoped state bucket:
 
 ```hcl
 bucket  = "juiceshop-lab-tfstate-<account-id>"
@@ -160,21 +182,47 @@ profile = "<your-cli-profile>"
 ```
 
 State locking is native to the S3 backend (`use_lockfile` in `versions.tf`),
-so there is no DynamoDB table.
+so there is no DynamoDB table to create.
 
-## Usage
+Optionally, to reach the lab without joining the VPN, copy
+`local.auto.tfvars.example` to `local.auto.tfvars` and set `evaluator_cidrs`
+to your address. That file is gitignored, so no operator IP reaches the repo.
+
+### Deploy
 
 ```bash
-terraform -chdir=terraform/environments/lab init -backend-config=backend.hcl
-terraform -chdir=terraform/environments/lab validate
-terraform -chdir=terraform/environments/lab plan    -var-file=lab.tfvars
-terraform -chdir=terraform/environments/lab apply   -var-file=lab.tfvars
-terraform -chdir=terraform/environments/lab destroy -var-file=lab.tfvars
+cd terraform/environments/lab
+
+terraform init -backend-config=backend.hcl
+terraform apply -var-file=lab.tfvars
 ```
+
+`-var-file` is required: the infrastructure-shape variables have no defaults,
+so `lab.tfvars` is their only source and cannot silently disagree with one.
+
+### Verify
+
+```bash
+terraform fmt -recursive -check       # from the repo root, so modules/ is in scope
+terraform -chdir=terraform/environments/lab validate
+terraform -chdir=terraform/environments/lab plan -var-file=lab.tfvars
+```
+
+A clean deploy re-plans to zero changes.
+
+### Teardown
+
+```bash
+terraform destroy -var-file=lab.tfvars
+```
+
+Destroy leaves the state bucket in place; it is created out of band and
+holds the history of every apply. Delete it by hand if the account is being
+retired.
 
 ## Estimated cost
 
-Once both VMs exist (phase 2):
+Once both VMs exist:
 
 | Item | Hourly | Monthly |
 |---|---|---|
@@ -185,28 +233,10 @@ Once both VMs exist (phase 2):
 | **Total** | **~$0.141** | **~$102** |
 
 A short assessment run is what matters: **a 20-hour lab run costs roughly
-$2.80.** Phase 1 as applied today (VPC, subnets, IGW, route tables, security
-groups) costs **$0.00** — none of those resources are billable.
+$2.80.** The network layer as applied today (VPC, subnets, IGW, route tables,
+security groups) costs **$0.00** — none of those resources are billable.
 
 Tear down with `terraform destroy` after evidence is captured.
-
-## Roadmap
-
-- [x] **Phase 1 — network.** VPC, public/private subnets, IGW, route tables, security groups. Applied and verified.
-- [ ] **Phase 2 — compute.** Both VMs, SSM instance profiles, Wazuh EBS volume, cloud-init, private subnet NAT route.
-- [ ] **Phase 3 — workloads.** Juice Shop + ingress-nginx/ModSecurity Helm chart, Wazuh agent enrollment, custom detection rule.
-- [ ] **Phase 4 — verifier.** Readiness check, unique-marker request, Wazuh Indexer API lookup, WAF allow/block proof, evidence capture.
-- [ ] **Phase 5 — CI/CD.** `fmt`/`validate`/tflint, Trivy, Gitleaks, gated deploy on OIDC credentials.
-
-## Verification performed
-
-Phase 1 was checked against the AWS API rather than the apply output:
-
-- Private route table has **no** `0.0.0.0/0` route — fail-closed as intended
-- `MapPublicIpOnLaunch` is `false` on **both** subnets
-- Default security group has **0** rules
-- All 5 Wazuh ingress rules are security-group-referenced, **0** are CIDR-based
-- The only `0.0.0.0/0` ingress in the VPC is **udp/51820** (WireGuard)
 
 ## Notes
 
