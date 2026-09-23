@@ -67,6 +67,7 @@ jobs:
           scan-ref: .
           severity: HIGH,CRITICAL
           exit-code: "1"
+          trivyignores: .trivyignore
           trivy-config: trivy.yaml
 
       # The binary rather than the action: gitleaks-action gates on a licence

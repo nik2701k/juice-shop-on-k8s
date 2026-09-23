@@ -1,0 +1,36 @@
+# Accepted findings, each with the reason it is accepted. Nothing here is
+# suppressed because it was noisy; anything not listed still fails the build.
+#
+# Reviewed 2026-09-23.
+
+# AWS-0104 - unrestricted security group egress.
+# Both VMs must reach the internet to install packages and pull container
+# images, and the Wazuh VM does so through the app VM's NAT hop. Pinning
+# egress would mean enumerating apt, Docker Hub, GitHub and the AWS APIs by
+# address, which change without notice. Inbound is where this lab is actually
+# restricted: exactly one port, udp/51820, is reachable from the internet.
+AWS-0104
+
+# AWS-0132 - S3 bucket not encrypted with a customer-managed key.
+# The state and manifest buckets use SSE-S3 (AES256). A customer-managed key
+# costs roughly $1/month each and adds key policy management for no meaningful
+# gain in a short-lived lab whose budget is trial credit. Both buckets block
+# all public access and deny non-TLS requests.
+AWS-0132
+
+# KSV-0014 - container root filesystem is writable.
+# Juice Shop keeps its SQLite database on local disk and the OWASP CRS nginx
+# image writes to its cache and temp directories at runtime. Making these read
+# only requires mapping each writable path to an emptyDir, which is worth
+# doing but was not attempted late in the build rather than risking an
+# unverified change to a working, evidenced stack. Recorded as an incomplete
+# item in the README.
+KSV-0014
+
+# KSV-0118 - default security context permits root.
+# Both containers already set allowPrivilegeEscalation: false, and Juice Shop
+# additionally drops all capabilities. Adding runAsNonRoot requires confirming
+# the UID each upstream image actually runs as; guessing it produces a pod
+# that will not start. Same reasoning as KSV-0014 - recorded rather than
+# rushed.
+KSV-0118
