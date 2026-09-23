@@ -63,6 +63,28 @@ listed with what it would have cost in `us-east-1`.
 **Roughly $149/month of managed-service spend avoided** versus the same
 architecture built the conventional enterprise way.
 
+### Tagging
+
+Tags are applied through the provider's `default_tags` rather than per
+resource, so no resource can be forgotten and no module has to know the
+tagging scheme. `lab.tfvars` supplies the ownership/cost half, merged last so
+it can override a baseline value if it ever needs to.
+
+| Tag | Source | Purpose |
+|---|---|---|
+| `Project` | provider baseline | Groups the lab in Cost Explorer |
+| `Env` | provider baseline | Separates this from any future environment |
+| `ManagedBy` | provider baseline | Marks resources as Terraform-owned, so nobody edits them by hand |
+| `Owner` | `lab.tfvars` | Who to ask before deleting |
+| `CostCenter` | `lab.tfvars` | Cost allocation |
+| `Lifecycle` | `lab.tfvars` | `ephemeral` — these are meant to be destroyed after assessment |
+| `Repo` | `lab.tfvars` | Traces a resource back to the code that made it |
+
+Three of the 21 resources carry no tags: `aws_route` and the two
+`aws_route_table_association`s. **AWS does not support tags on those resource
+types at all** — it is not an omission. Everything taggable is tagged, which
+the Resource Groups Tagging API confirms at 18 of 18.
+
 ### Security decisions
 
 | Decision | Why |

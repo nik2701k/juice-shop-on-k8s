@@ -5,6 +5,16 @@ project     = "juiceshop-lab"
 region      = "us-east-1"
 aws_profile = "test1"
 
+# Merged into provider default_tags, so every taggable resource inherits them.
+# Owner/CostCenter make the lab findable in Cost Explorer; Lifecycle is the
+# reminder that these resources are meant to be destroyed after assessment.
+tags = {
+  Owner      = "nik2701k"
+  CostCenter = "security-lab"
+  Lifecycle  = "ephemeral"
+  Repo       = "juice-shop-on-k8s"
+}
+
 vpc_cidr            = "10.0.0.0/16"
 public_subnet_cidr  = "10.0.1.0/24"
 private_subnet_cidr = "10.0.11.0/24"
