@@ -94,8 +94,7 @@ architecture built the conventional enterprise way.
 terraform/
 ├── environments/lab/           # root module: provider, backend, wiring, tfvars
 │   ├── lab.tfvars              # committed — the shape of the lab, not secrets
-│   ├── local.auto.tfvars.example  # copy to local.auto.tfvars for operator IPs
-│   └── backend.hcl.example     # state bucket config + one-time creation commands
+│   └── local.auto.tfvars.example  # copy to local.auto.tfvars for operator IPs
 └── modules/
     ├── network/                # VPC, subnets, IGW, route tables, default-SG lockdown
     └── security-groups/        # app SG + wazuh SG
@@ -122,14 +121,50 @@ auto-loaded, so a home IP never reaches the repo or the redacted evidence.
 
 - Terraform ≥ 1.10 (native S3 state locking)
 - AWS CLI v2 with a configured profile
-- An S3 state bucket — see `backend.hcl.example` for the one-time commands
+
+### One-time: the state bucket
+
+A state backend cannot store the bucket it lives in, so this is the single
+step performed outside Terraform. Run it once per account.
+
+```bash
+B=juiceshop-lab-tfstate-<account-id>
+
+aws s3api create-bucket --bucket "$B" --region us-east-1
+
+# Versioning is the control that matters: it makes a truncated or corrupted
+# state file recoverable.
+aws s3api put-bucket-versioning --bucket "$B" \
+  --versioning-configuration Status=Enabled
+
+aws s3api put-bucket-encryption --bucket "$B" \
+  --server-side-encryption-configuration \
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},"BucketKeyEnabled":true}]}'
+
+aws s3api put-public-access-block --bucket "$B" \
+  --public-access-block-configuration \
+  'BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true'
+```
+
+Also attach a bucket policy denying `aws:SecureTransport = false`, so plaintext
+requests are rejected outright rather than merely encrypted at rest.
+
+Then write `terraform/environments/lab/backend.hcl` — gitignored, because it
+names the account-scoped state bucket:
+
+```hcl
+bucket  = "juiceshop-lab-tfstate-<account-id>"
+key     = "lab/terraform.tfstate"
+region  = "us-east-1"
+profile = "<your-cli-profile>"
+```
+
+State locking is native to the S3 backend (`use_lockfile` in `versions.tf`),
+so there is no DynamoDB table.
 
 ## Usage
 
 ```bash
-cp terraform/environments/lab/backend.hcl.example terraform/environments/lab/backend.hcl
-# edit bucket/profile, then:
-
 terraform -chdir=terraform/environments/lab init -backend-config=backend.hcl
 terraform -chdir=terraform/environments/lab validate
 terraform -chdir=terraform/environments/lab plan    -var-file=lab.tfvars

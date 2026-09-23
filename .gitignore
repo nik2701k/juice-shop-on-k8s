@@ -2,7 +2,7 @@
 *.tfstate
 *.tfstate.*
 .terraform/
-.terraform.lock.hcl.bak
+.terraform.lock.hcl
 crash.log
 crash.*.log
 
@@ -11,7 +11,6 @@ crash.*.log
 secrets*.tfvars
 !*.tfvars.example
 backend.hcl
-!backend.hcl.example
 
 # Credentials and key material.
 *.pem
@@ -23,3 +22,6 @@ wg-*.conf
 
 # Generated evidence is redacted, but keep the raw working copies out.
 evidence/raw/
+
+# Assignment brief, kept locally as the requirements reference.
+task.txt
