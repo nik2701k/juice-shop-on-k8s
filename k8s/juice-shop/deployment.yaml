@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juice-shop
+  namespace: lab
+  labels:
+    app.kubernetes.io/name: juice-shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: juice-shop
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: juice-shop
+    spec:
+      containers:
+        - name: juice-shop
+          # Pinned. "latest" on a deliberately vulnerable app means the set of
+          # vulnerabilities changes under the evidence we captured.
+          image: bkimminich/juice-shop:v20.2.0
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Juice Shop trusts X-Forwarded-For only when told it sits behind a
+            # proxy. Without this the WAF's address is logged as the client for
+            # every request.
+            - name: NODE_ENV
+              value: unsafe
+          readinessProbe:
+            httpGet:
+              path: /rest/admin/application-version
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /rest/admin/application-version
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
