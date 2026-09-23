@@ -124,7 +124,9 @@ case "$HEALTH" in
   *)            fail "indexer cluster health: ${HEALTH:-unreachable}" ;;
 esac
 
-# The shipped default must not still work.
+# The shipped default must not still work. The literal below is Wazuh's
+# published default, present so the check can prove it has been rotated -
+# gitleaks:allow
 DEFAULT_CODE="$(curl -sk -u "admin:SecretPassword" -m "$HTTP_TIMEOUT" \
   -o /dev/null -w '%{http_code}' "https://$WAZUH_IP:9200/_cluster/health" 2>/dev/null)"
 [ "$DEFAULT_CODE" = "401" ] && pass "shipped default indexer password rejected" \
