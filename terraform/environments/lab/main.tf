@@ -18,5 +18,23 @@ module "security_groups" {
   evaluator_cidrs     = var.evaluator_cidrs
 }
 
-# Next: modules/compute adds both instances, then the private subnet's default
-# route to the app VM's ENI (aws_route on module.network.private_route_table_id).
+module "compute" {
+  source = "../../modules/compute"
+
+  name                   = var.project
+  availability_zone      = module.network.availability_zone
+  public_subnet_id       = module.network.public_subnet_id
+  private_subnet_id      = module.network.private_subnet_id
+  private_subnet_cidr    = var.private_subnet_cidr
+  private_route_table_id = module.network.private_route_table_id
+
+  app_security_group_id   = module.security_groups.app_security_group_id
+  wazuh_security_group_id = module.security_groups.wazuh_security_group_id
+
+  app_instance_type      = var.app_instance_type
+  wazuh_instance_type    = var.wazuh_instance_type
+  app_root_volume_size   = var.app_root_volume_size
+  wazuh_root_volume_size = var.wazuh_root_volume_size
+  wazuh_data_volume_size = var.wazuh_data_volume_size
+  ssh_public_key         = var.ssh_public_key
+}

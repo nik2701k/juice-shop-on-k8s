@@ -4,7 +4,9 @@ Terraform-driven security lab on AWS: OWASP Juice Shop on K3s behind a
 ModSecurity WAF, reachable only over WireGuard, with a private Wazuh stack
 collecting and indexing the ingress logs.
 
-**Status: network layer applied and verified.**
+**Status: network and compute applied and verified.** Both VMs are up,
+reachable only through SSM, with the private subnet reaching the internet via
+the app VM rather than a NAT Gateway.
 
 ---
 
@@ -96,6 +98,10 @@ the Resource Groups Tagging API confirms at 18 of 18.
 | SSH defaults to **closed**; SSM Session Manager is the access path | No key pair to distribute, lose, or commit. Port 22 opens only if `admin_cidrs` is set deliberately. |
 | Juice Shop Service is `ClusterIP` | Prevents direct-origin bypass structurally. There is no address that skips the WAF. |
 | State bucket denies `aws:SecureTransport=false` | Encryption at rest is not enough; plaintext requests are rejected outright. |
+| **IMDSv2 required** (`http_tokens = "required"`) on both VMs | This lab deliberately runs a vulnerable application. Unauthenticated metadata access is exactly how a server-side request forgery in Juice Shop turns into stolen IAM role credentials. |
+| **One IAM role per VM**, not one shared role | They carry the same policy today, but the app VM will need to read Wazuh credentials from SSM Parameter Store and the Wazuh VM must never be able to. |
+| No key pair exists unless `ssh_public_key` is set | Default is SSM Session Manager only — no key material to distribute, lose, or commit. |
+| Root and data volumes **encrypted** | Cheap, and there is no reason not to. |
 | State bucket versioning enabled | This is the control that makes a truncated or corrupted state file recoverable. |
 
 ### Reliability decisions
@@ -105,6 +111,10 @@ the Resource Groups Tagging API confirms at 18 of 18.
 | Wazuh compose supervised by a **systemd unit**, not a bare `docker compose up -d` | Survives reboot, not just container crash. K3s workloads already get this from the kubelet. |
 | `vm.max_map_count` persisted to `/etc/sysctl.d/` | Set live by cloud-init it works on first apply, then the indexer refuses to start after the first reboot. Classic silent failure. |
 | Wazuh data on a **separate EBS volume** with `prevent_destroy`, `nofail` in fstab | Satisfies "reruns must preserve data". Miss the fstab entry and Wazuh returns with an empty data dir, which looks exactly like a crash. |
+| The data volume is formatted **only if blank** | This single `blkid` check is what makes a rerun preserve the indices rather than silently reformatting them. |
+| Mounted by **UUID**, not device name | NVMe device ordering is not stable across reboots. |
+| NAT rules re-applied each boot by a **systemd unit**, not written once by cloud-init | A reboot cannot quietly blackhole the private subnet. Each rule is checked before being added, so the script is safe to re-run. |
+| `source_dest_check = false` on the app VM | Mandatory for a NAT instance. EC2 drops forwarded packets otherwise, because their source address is not the instance's own. |
 
 ---
 
@@ -117,7 +127,9 @@ terraform/
 │   └── local.auto.tfvars.example  # copy to local.auto.tfvars for operator IPs
 └── modules/
     ├── network/                # VPC, subnets, IGW, route tables, default-SG lockdown
-    └── security-groups/        # app SG + wazuh SG
+    ├── security-groups/        # app SG + wazuh SG
+    └── compute/                # both VMs, IAM roles, EIP, NAT route, Wazuh data volume
+        └── templates/          # cloud-init user-data for each VM
 ```
 
 Standard `modules/` + `environments/` split. Modules declare

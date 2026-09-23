@@ -22,3 +22,23 @@ output "wazuh_security_group_id" {
   description = "Security group for the Wazuh VM."
   value       = module.security_groups.wazuh_security_group_id
 }
+
+output "app_public_ip" {
+  description = "Elastic IP of the app VM. The WireGuard endpoint."
+  value       = module.compute.app_public_ip
+}
+
+output "app_instance_id" {
+  description = "Instance ID of the app VM, for SSM Session Manager."
+  value       = module.compute.app_instance_id
+}
+
+output "wazuh_private_ip" {
+  description = "Private address of the Wazuh VM. It has no public address."
+  value       = module.compute.wazuh_private_ip
+}
+
+output "wazuh_instance_id" {
+  description = "Instance ID of the Wazuh VM, for SSM Session Manager."
+  value       = module.compute.wazuh_instance_id
+}

@@ -1,0 +1,52 @@
+#!/bin/bash
+# App VM bootstrap. Terraform interpolates $${...} style references before
+# bash ever sees this file, so only $${} is templated; $VAR and $(...) survive
+# into the written scripts untouched.
+set -euo pipefail
+exec >> /var/log/lab-bootstrap.log 2>&1
+echo "=== app bootstrap $(date -Is) ==="
+
+# Packet forwarding, persisted. Set only at runtime it works on first boot and
+# then silently reverts on reboot.
+cat > /etc/sysctl.d/99-lab-nat.conf <<'SYSCTL'
+net.ipv4.ip_forward = 1
+SYSCTL
+sysctl --system
+
+# NAT rules are re-applied at every boot by systemd rather than written once by
+# cloud-init, so a reboot cannot quietly blackhole the private subnet. Each
+# rule is checked before being added, making the script safe to re-run.
+cat > /usr/local/sbin/lab-nat.sh <<'NAT'
+#!/bin/bash
+set -euo pipefail
+CIDR="${private_subnet_cidr}"
+IFACE="$(ip -o -4 route show to default | awk '{print $5}' | head -n1)"
+
+iptables -t nat -C POSTROUTING -s "$CIDR" -o "$IFACE" -j MASQUERADE 2>/dev/null \
+  || iptables -t nat -A POSTROUTING -s "$CIDR" -o "$IFACE" -j MASQUERADE
+iptables -C FORWARD -s "$CIDR" -j ACCEPT 2>/dev/null \
+  || iptables -I FORWARD 1 -s "$CIDR" -j ACCEPT
+iptables -C FORWARD -d "$CIDR" -j ACCEPT 2>/dev/null \
+  || iptables -I FORWARD 1 -d "$CIDR" -j ACCEPT
+NAT
+chmod 0755 /usr/local/sbin/lab-nat.sh
+
+cat > /etc/systemd/system/lab-nat.service <<'UNIT'
+[Unit]
+Description=NAT for the lab private subnet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lab-nat.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now lab-nat.service
+
+echo "=== app bootstrap complete $(date -Is) ==="
