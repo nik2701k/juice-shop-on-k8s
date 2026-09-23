@@ -61,7 +61,7 @@ jobs:
       # deliberately vulnerable, but that is an application concern - nothing
       # here is relaxed on its account.
       - name: trivy (IaC misconfiguration)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: .
@@ -69,10 +69,15 @@ jobs:
           exit-code: "1"
           trivy-config: trivy.yaml
 
+      # The binary rather than the action: gitleaks-action gates on a licence
+      # for organisation-owned repositories, which would make this check fail
+      # for a reason unrelated to whether a secret was committed.
       - name: gitleaks (committed secrets)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=8.21.2
+          curl -sL "https://github.com/gitleaks/gitleaks/releases/download/v$VERSION/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --source . --redact --verbose --exit-code 1
 
   # --------------------------------------------------------------------
   # Terraform first. An apply can replace the app VM, which rebuilds the
