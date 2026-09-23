@@ -1,0 +1,5 @@
+# Copy to local.auto.tfvars (gitignored, auto-loaded by Terraform).
+# Keeps operator/evaluator addresses out of the repo and out of the evidence.
+
+# admin_cidrs     = ["203.0.113.10/32"]   # break-glass SSH; omit to stay SSM-only
+# evaluator_cidrs = ["198.51.100.20/32"]  # WAF on 443 without joining the VPN

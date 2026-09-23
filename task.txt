@@ -1,0 +1,50 @@
+Submit Terraform-based automation that brings up the complete lab with one documented
+command after credentials and variables are supplied. No manual server, console, or Wazuh
+setup. Any one cloud is acceptable.
+
+Build checklist
+● Application: Deploy OWASP Juice Shop on Kubernetes, preferably K3s on a VM.
+Docker on a VM is also accepted.
+● Wazuh: Deploy the server, indexer, and dashboard on a separate VM. Automate
+agent/collector installation, enrollment, and application/ingress log collection. Persist
+Wazuh data.
+● VPN: Provide working private access to Wazuh and administration, using OpenVPN,
+WireGuard, or equivalent private-network access.
+● WAF: Put Juice Shop behind a WAF. Demonstrate one allowed request and one
+deterministic blocked request. Prevent direct-origin bypass; restrict the lab to VPN users
+or an evaluator IP allowlist.
+● Cloud security: Restrict firewall rules and identities. Protect secrets and Terraform
+state; commit neither credentials nor state. Document TLS handling.
+● Code: Write a verifier that checks readiness, sends a request with a new unique marker,
+and finds that marker in Wazuh through its Indexer API. Configure a test rule or archive
+indexing as needed. Use timeouts and nonzero failure exits. Deployment succeeds only
+after readiness and log delivery pass; reruns must preserve data.
+● CI/CD: Validate Terraform, test the verifier, and scan candidate code/IaC and secrets.
+Gate the deployment job on successful checks. Use protected credentials and a
+controlled trigger. Juice Shop vulnerability scanning is optional; do not disable other
+checks for its intentional vulnerabilities.
+
+Keep spending low
+● Use two small VMs and free tools. Managed Kubernetes, high availability, and paid
+VPN/WAF subscriptions are optional. Suggested app VM: 2 vCPU / 4 GB RAM. Wazuh's
+starting recommendation: 4 vCPU / 8 GiB RAM / 50 GB disk.
+● Use eligible trial credits: Google Cloud — $300 or AWS — up to $200 ($100 initially, up
+to $100 earned). Check account eligibility and expiry. Estimate the short lab run's total
+cost, including disks, public IPs, and networking; tear down assessment resources after
+testing.
+
+Tool links — choose what fits
+● Core: Terraform, K3s, Juice Shop, Wazuh, Wazuh Docker deployment.
+● Open-source VPN: OpenVPN Community or WireGuard.
+● Open-source WAF: ModSecurity + OWASP CRS Docker or Coraza + Caddy. No paid
+WAF or public domain is needed for a private lab.
+● Free hosted alternative: Cloudflare WAF includes a free managed ruleset and 5
+custom rules for a domain you control. Zero Trust Free supports up to 50 users. Tunnel
+with private-network access requires an enrolled Cloudflare One/WARP client; a public
+Tunnel alone is not a VPN.
+● Open-source CI checks: Trivy and Gitleaks. Use any CI platform.
+Submit
+Repository/ZIP, Terraform and scripts, CI workflow, and a short README: prerequisites,
+deploy/verify/teardown commands, architecture, estimated cost, actual effort, AI use, and
+incomplete items. Include redacted evidence of VPN access, WAF blocking, and a fresh Wazuh
+event. Be ready to explain and modify your solution.
