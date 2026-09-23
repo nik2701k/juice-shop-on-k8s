@@ -46,3 +46,8 @@ output "kubeconfig_parameter" {
   EOT
   value       = "/${var.name}/k3s/kubeconfig"
 }
+
+output "app_role_name" {
+  description = "App VM IAM role name, so other modules can attach policies to it."
+  value       = aws_iam_role.this["app"].name
+}

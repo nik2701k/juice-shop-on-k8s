@@ -119,3 +119,8 @@ variable "ssh_public_key" {
   type        = string
   default     = null
 }
+
+variable "github_repository" {
+  description = "owner/repo allowed to assume the CI deploy role."
+  type        = string
+}

@@ -1,0 +1,158 @@
+name: ci
+
+# Deployment is never automatic. Checks run on every push and pull request;
+# shipping requires a human to dispatch the workflow, and the job that does it
+# is pinned to a protected environment.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Apply Terraform and ship manifests"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: juiceshop-lab
+
+jobs:
+  # --------------------------------------------------------------------
+  # Gate. Everything below depends on this passing.
+  # --------------------------------------------------------------------
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks needs history to scan commits, not just the tree
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      # From the repository root: run inside environments/lab and it covers 5
+      # of the 13 .tf files, silently skipping modules/ and still exiting 0.
+      - name: terraform fmt
+        run: terraform fmt -recursive -check -diff
+
+      - name: terraform validate
+        run: |
+          terraform -chdir=terraform/environments/lab init -backend=false -input=false
+          terraform -chdir=terraform/environments/lab validate
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning scripts/verify.sh
+
+      - name: kubeconform (manifests are valid Kubernetes)
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz kubeconform
+          ./kubeconform -strict -summary -ignore-missing-schemas k8s/
+
+      # Misconfiguration scan over the IaC and the manifests. Juice Shop is
+      # deliberately vulnerable, but that is an application concern - nothing
+      # here is relaxed on its account.
+      - name: trivy (IaC misconfiguration)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivy-config: trivy.yaml
+
+      - name: gitleaks (committed secrets)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # --------------------------------------------------------------------
+  # Terraform first. An apply can replace the app VM, which rebuilds the
+  # cluster empty - so manifests must never be shipped before it finishes.
+  # --------------------------------------------------------------------
+  terraform:
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    runs-on: ubuntu-latest
+    environment: lab            # protected: required reviewers, and the only
+                                # subject the AWS trust policy will accept
+    permissions:
+      id-token: write           # OIDC: no long-lived AWS key exists anywhere
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+
+      - name: terraform apply
+        working-directory: terraform/environments/lab
+        run: |
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          cat > backend.hcl <<HCL
+          bucket = "${PROJECT}-tfstate-$ACCOUNT"
+          key    = "lab/terraform.tfstate"
+          region = "${AWS_REGION}"
+          HCL
+          terraform init -backend-config=backend.hcl -input=false
+          terraform apply -var-file=lab.tfvars -input=false -auto-approve
+
+  # --------------------------------------------------------------------
+  # Manifests, then verification - both executed on the node over SSM, so
+  # the cluster needs no inbound path and CI holds no VPN credential.
+  # --------------------------------------------------------------------
+  deploy:
+    needs: terraform
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    runs-on: ubuntu-latest
+    environment: lab
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: stage manifests and the verifier
+        run: |
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          echo "BUCKET=${PROJECT}-manifests-$ACCOUNT" >> "$GITHUB_ENV"
+          aws s3 sync k8s/ "s3://${PROJECT}-manifests-$ACCOUNT/k8s/" --delete
+          aws s3 cp scripts/verify.sh "s3://${PROJECT}-manifests-$ACCOUNT/verify.sh"
+
+      - name: apply manifests on the node
+        run: |
+          APP_ID="$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${PROJECT}-app" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)"
+          echo "APP_ID=$APP_ID" >> "$GITHUB_ENV"
+          CMD="$(aws ssm send-command --instance-ids "$APP_ID" \
+            --document-name AWS-RunShellScript --timeout-seconds 900 \
+            --parameters "commands=[\"set -e\",\"aws s3 sync s3://${BUCKET}/k8s/ /opt/lab/k8s/ --delete\",\"kubectl apply -k /opt/lab/k8s\",\"kubectl -n lab rollout status deploy/waf --timeout=300s\",\"kubectl -n lab rollout status deploy/juice-shop --timeout=300s\"]" \
+            --query Command.CommandId --output text)"
+          ./.github/scripts/wait-ssm.sh "$CMD" "$APP_ID"
+
+      # The deployment is not considered successful until a request carrying a
+      # marker unique to this run has been found again through the Indexer API.
+      - name: verify
+        run: |
+          CMD="$(aws ssm send-command --instance-ids "$APP_ID" \
+            --document-name AWS-RunShellScript --timeout-seconds 900 \
+            --parameters "commands=[\"set -e\",\"aws s3 cp s3://${BUCKET}/verify.sh /opt/lab/verify.sh\",\"chmod +x /opt/lab/verify.sh\",\"cd /opt/lab && AWS_REGION=${AWS_REGION} PROJECT=${PROJECT} ./verify.sh\"]" \
+            --query Command.CommandId --output text)"
+          ./.github/scripts/wait-ssm.sh "$CMD" "$APP_ID"
