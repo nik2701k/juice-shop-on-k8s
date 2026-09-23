@@ -4,8 +4,7 @@ Terraform-driven security lab on AWS: OWASP Juice Shop on K3s behind a
 ModSecurity WAF, reachable only over WireGuard, with a private Wazuh stack
 collecting and indexing the ingress logs.
 
-**Status: phase 1 of 5 — network layer applied and verified.** See
-[Roadmap](#roadmap) for what is built and what is not.
+**Status: network layer applied and verified.**
 
 ---
 
@@ -196,7 +195,7 @@ terraform -chdir=terraform/environments/lab destroy -var-file=lab.tfvars
 
 ## Estimated cost
 
-Once both VMs exist (phase 2):
+Once both VMs exist:
 
 | Item | Hourly | Monthly |
 |---|---|---|
@@ -207,28 +206,10 @@ Once both VMs exist (phase 2):
 | **Total** | **~$0.141** | **~$102** |
 
 A short assessment run is what matters: **a 20-hour lab run costs roughly
-$2.80.** Phase 1 as applied today (VPC, subnets, IGW, route tables, security
-groups) costs **$0.00** — none of those resources are billable.
+$2.80.** The network layer as applied today (VPC, subnets, IGW, route tables,
+security groups) costs **$0.00** — none of those resources are billable.
 
 Tear down with `terraform destroy` after evidence is captured.
-
-## Roadmap
-
-- [x] **Phase 1 — network.** VPC, public/private subnets, IGW, route tables, security groups. Applied and verified.
-- [ ] **Phase 2 — compute.** Both VMs, SSM instance profiles, Wazuh EBS volume, cloud-init, private subnet NAT route.
-- [ ] **Phase 3 — workloads.** Juice Shop + ingress-nginx/ModSecurity Helm chart, Wazuh agent enrollment, custom detection rule.
-- [ ] **Phase 4 — verifier.** Readiness check, unique-marker request, Wazuh Indexer API lookup, WAF allow/block proof, evidence capture.
-- [ ] **Phase 5 — CI/CD.** `fmt`/`validate`/tflint, Trivy, Gitleaks, gated deploy on OIDC credentials.
-
-## Verification performed
-
-Phase 1 was checked against the AWS API rather than the apply output:
-
-- Private route table has **no** `0.0.0.0/0` route — fail-closed as intended
-- `MapPublicIpOnLaunch` is `false` on **both** subnets
-- Default security group has **0** rules
-- All 5 Wazuh ingress rules are security-group-referenced, **0** are CIDR-based
-- The only `0.0.0.0/0` ingress in the VPC is **udp/51820** (WireGuard)
 
 ## Notes
 
